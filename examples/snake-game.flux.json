@@ -1,0 +1,216 @@
+{
+  "flux_version": 2,
+  "target": "any",
+  "entry_point": "main",
+  "comment": "Snake Game mit ALSA-Soundausgabe fuer Linux-Terminal (vereinfachte Darstellung)",
+
+  "types": [
+    { "id": "t_u8",         "kind": "integer",  "bits": 8,   "signed": false },
+    { "id": "t_i16",        "kind": "integer",  "bits": 16,  "signed": true },
+    { "id": "t_i32",        "kind": "integer",  "bits": 32,  "signed": true },
+    { "id": "t_u32",        "kind": "integer",  "bits": 32,  "signed": false },
+    { "id": "t_i64",        "kind": "integer",  "bits": 64,  "signed": true },
+    { "id": "t_u64",        "kind": "integer",  "bits": 64,  "signed": false },
+    { "id": "t_f32",        "kind": "float",    "bits": 32 },
+    { "id": "t_bool",       "kind": "boolean" },
+    { "id": "t_unit",       "kind": "unit" },
+    { "id": "t_point",      "kind": "struct", "fields": [
+        { "name": "x", "type": "t_i32" },
+        { "name": "y", "type": "t_i32" }
+    ]},
+    { "id": "t_direction",  "kind": "enum", "variants": ["UP", "DOWN", "LEFT", "RIGHT"] },
+    { "id": "t_snake_body", "kind": "array", "element": "t_point", "max_length": 800,
+      "constraint": "length > 0 AND length <= 800" },
+    { "id": "t_game_state", "kind": "struct", "fields": [
+        { "name": "snake",     "type": "t_snake_body" },
+        { "name": "direction", "type": "t_direction" },
+        { "name": "food",      "type": "t_point" },
+        { "name": "score",     "type": "t_u32" },
+        { "name": "alive",     "type": "t_bool" },
+        { "name": "grid_w",    "type": "t_i32", "constraint": "self > 0" },
+        { "name": "grid_h",    "type": "t_i32", "constraint": "self > 0" }
+    ]},
+    { "id": "t_term_state",  "kind": "struct", "fields": [
+        { "name": "original_termios", "type": "t_termios_raw" },
+        { "name": "fd", "type": "t_i64" }
+    ]},
+    { "id": "t_termios_raw", "kind": "opaque", "size": 60 },
+    { "id": "t_pcm_buffer",  "kind": "array", "element": "t_i16", "max_length": 44100 },
+    { "id": "t_framebuf",    "kind": "array", "element": "t_u8", "max_length": 16384 },
+    { "id": "t_key_event",   "kind": "enum",
+      "variants": ["ARROW_UP", "ARROW_DOWN", "ARROW_LEFT", "ARROW_RIGHT", "KEY_Q", "KEY_NONE"] }
+  ],
+
+  "regions": [
+    { "id": "r_static", "lifetime": "static" },
+    { "id": "r_game",   "lifetime": "scoped", "scope": "main" },
+    { "id": "r_frame",  "lifetime": "scoped", "scope": "game_loop_body" },
+    { "id": "r_sound",  "lifetime": "scoped", "scope": "play_sound" }
+  ],
+
+  "modules": [
+    {
+      "id": "p_terminal",
+      "interface": {
+        "exports": [
+          { "fn": "term_init",    "in": [],                        "out": "t_term_state", "effects": ["IO.terminal"] },
+          { "fn": "term_restore", "in": ["t_term_state"],          "out": "t_unit",       "effects": ["IO.terminal"] },
+          { "fn": "read_key",     "in": ["t_term_state"],          "out": "t_key_event",  "effects": ["IO.terminal"], "faults": ["IO_TIMEOUT"] },
+          { "fn": "write_frame",  "in": ["t_term_state", "t_framebuf"], "out": "t_unit",  "effects": ["IO.terminal"] }
+        ]
+      }
+    },
+    {
+      "id": "p_sound",
+      "interface": {
+        "exports": [
+          { "fn": "sound_init",    "in": [],                            "out": "t_i64",       "effects": ["IO.sound"], "faults": ["SOUND_UNAVAILABLE"] },
+          { "fn": "sound_close",   "in": ["t_i64"],                    "out": "t_unit",      "effects": ["IO.sound"] },
+          { "fn": "play_tone",     "in": ["t_i64", "t_f32", "t_f32"], "out": "t_unit",      "effects": ["IO.sound"] },
+          { "fn": "generate_sine", "in": ["t_f32", "t_f32", "t_u32"], "out": "t_pcm_buffer", "comment": "PURE" }
+        ]
+      }
+    },
+    {
+      "id": "p_game_logic",
+      "interface": {
+        "exports": [
+          { "fn": "init_game",   "in": ["t_i32", "t_i32"],              "out": "t_game_state", "effects": ["IO.random"] },
+          { "fn": "update_game", "in": ["t_game_state", "t_key_event"], "out": "t_game_state", "effects": ["IO.random"] },
+          { "fn": "check_eat",   "in": ["t_game_state"],                "out": "t_bool" },
+          { "fn": "check_death", "in": ["t_game_state"],                "out": "t_bool" }
+        ]
+      }
+    },
+    {
+      "id": "p_renderer",
+      "interface": {
+        "exports": [
+          { "fn": "render_game", "in": ["t_game_state"], "out": "t_framebuf", "comment": "PURE, kein IO" }
+        ]
+      }
+    },
+    {
+      "id": "p_timing",
+      "interface": {
+        "exports": [
+          { "fn": "get_time_ms", "in": [],       "out": "t_u64", "effects": ["IO.clock"] },
+          { "fn": "sleep_until", "in": ["t_u64"], "out": "t_unit", "effects": ["IO.clock"] }
+        ]
+      }
+    }
+  ],
+
+  "nodes": [
+    { "id": "n_grid_w",  "kind": "C", "op": "CONST", "value": 40,  "type_out": "t_i32", "region": "r_static" },
+    { "id": "n_grid_h",  "kind": "C", "op": "CONST", "value": 20,  "type_out": "t_i32", "region": "r_static" },
+    { "id": "n_tick_ms", "kind": "C", "op": "CONST", "value": 150, "type_out": "t_u64", "region": "r_static" },
+
+    {
+      "id": "n_term_init", "kind": "E", "op": "CALL", "target": "p_terminal.term_init",
+      "inputs": [], "type_out": "t_term_state", "effects": ["IO.terminal"], "region": "r_game",
+      "faults": ["n_term_init_fault"],
+      "debug": { "intent": "Terminal in Raw-Modus" }
+    },
+    {
+      "id": "n_sound_init", "kind": "E", "op": "CALL", "target": "p_sound.sound_init",
+      "inputs": [], "type_out": "t_i64", "effects": ["IO.sound"],
+      "fault_policy": "continue_without", "fallback_value": -1,
+      "debug": { "intent": "ALSA oeffnen, bei Fehler ohne Sound weiterspielen" }
+    },
+    {
+      "id": "n_game_init", "kind": "E", "op": "CALL", "target": "p_game_logic.init_game",
+      "inputs": ["n_grid_w", "n_grid_h"], "type_out": "t_game_state",
+      "effects": ["IO.random"], "region": "r_game",
+      "debug": { "intent": "Spielzustand initialisieren" }
+    },
+
+    {
+      "id": "n_game_loop", "kind": "K", "op": "LOOP",
+      "condition": "state.alive == true",
+      "state_var": "state", "state_init": "n_game_init",
+      "body": "n_game_tick", "type_out": "t_game_state",
+      "debug": { "intent": "Hauptspielschleife, 150ms/Tick" }
+    },
+
+    {
+      "id": "n_game_tick", "kind": "K", "op": "SEQ", "region": "r_frame",
+      "sequence": [
+        "n_tick_start", "n_read_input", "n_check_quit",
+        "n_update_state", "n_check_sound",
+        "n_render", "n_write_screen", "n_tick_wait"
+      ],
+      "debug": { "intent": "Ein Tick: Input → Logik → Sound → Render → Wait" }
+    },
+
+    { "id": "n_tick_start",  "kind": "E", "op": "CALL", "target": "p_timing.get_time_ms",
+      "inputs": [], "type_out": "t_u64", "effects": ["IO.clock"] },
+    { "id": "n_read_input",  "kind": "E", "op": "CALL", "target": "p_terminal.read_key",
+      "inputs": ["n_term_init"], "type_out": "t_key_event", "effects": ["IO.terminal"],
+      "fault_policy": "use_default", "fallback_value": "KEY_NONE" },
+    { "id": "n_check_quit",  "kind": "K", "op": "BRANCH",
+      "condition": "n_read_input == KEY_Q", "true_path": "n_force_death", "false_path": "n_continue" },
+    { "id": "n_update_state","kind": "E", "op": "CALL", "target": "p_game_logic.update_game",
+      "inputs": ["state", "n_read_input"], "type_out": "t_game_state", "effects": ["IO.random"] },
+
+    { "id": "n_check_sound", "kind": "K", "op": "BRANCH",
+      "condition": "n_sound_init != -1",
+      "true_path": "n_sound_dispatch", "false_path": "n_skip_sound" },
+    { "id": "n_sound_dispatch", "kind": "K", "op": "BRANCH",
+      "condition": "check_eat(n_update_state)",
+      "true_path": "n_play_eat", "false_path": "n_sound_death_check" },
+    { "id": "n_play_eat", "kind": "E", "op": "CALL", "target": "p_sound.play_tone",
+      "inputs": ["n_sound_init", 880.0, 0.05], "type_out": "t_unit",
+      "effects": ["IO.sound"], "fault_policy": "ignore", "region": "r_sound",
+      "debug": { "intent": "Fress-Sound: 880 Hz, 50ms" } },
+    { "id": "n_sound_death_check", "kind": "K", "op": "BRANCH",
+      "condition": "check_death(n_update_state)",
+      "true_path": "n_play_death", "false_path": "n_skip_sound" },
+    { "id": "n_play_death", "kind": "E", "op": "CALL", "target": "p_sound.play_tone",
+      "inputs": ["n_sound_init", 220.0, 0.5], "type_out": "t_unit",
+      "effects": ["IO.sound"], "fault_policy": "ignore", "region": "r_sound",
+      "debug": { "intent": "Tod-Sound: 220 Hz, 500ms" } },
+
+    { "id": "n_render", "kind": "C", "op": "CALL", "target": "p_renderer.render_game",
+      "inputs": ["n_update_state"], "type_out": "t_framebuf", "region": "r_frame" },
+    { "id": "n_write_screen", "kind": "E", "op": "CALL", "target": "p_terminal.write_frame",
+      "inputs": ["n_term_init", "n_render"], "type_out": "t_unit",
+      "effects": ["IO.terminal"], "fault_policy": "abort", "region": "r_frame" },
+
+    { "id": "n_calc_next_tick", "kind": "C", "op": "ADD",
+      "inputs": ["n_tick_start", "n_tick_ms"], "type_out": "t_u64" },
+    { "id": "n_sleep", "kind": "E", "op": "CALL", "target": "p_timing.sleep_until",
+      "inputs": ["n_calc_next_tick"], "type_out": "t_unit", "effects": ["IO.clock"] },
+    { "id": "n_tick_wait", "kind": "K", "op": "SEQ",
+      "sequence": ["n_calc_next_tick", "n_sleep"] },
+
+    {
+      "id": "n_main_body", "kind": "K", "op": "FINALLY",
+      "body": { "kind": "K", "op": "SEQ",
+        "sequence": ["n_game_init", "n_game_loop", "n_show_score"] },
+      "finally": { "id": "n_cleanup", "kind": "K", "op": "SEQ",
+        "sequence": ["n_sound_close_safe", "n_term_restore"] },
+      "debug": { "intent": "Garantiertes Terminal-Restore auch bei Crash" }
+    },
+
+    {
+      "id": "main", "kind": "K", "op": "SEQ",
+      "sequence": ["n_term_init", "n_sound_init", "n_main_body", "n_exit_ok"],
+      "type_out": "t_unit",
+      "debug": {
+        "intent": "Snake Game Hauptprogramm",
+        "requirement": "Snake-Game mit Soundausgabe fuer Linux-Terminal"
+      }
+    }
+  ],
+
+  "contracts": [
+    { "id": "v_snake_alive",    "target": "n_game_loop",    "invariant": "state.snake.length > 0" },
+    { "id": "v_food_in_bounds", "target": "n_update_state", "post": "result.food.x >= 0 AND result.food.x < result.grid_w AND result.food.y >= 0 AND result.food.y < result.grid_h" },
+    { "id": "v_snake_in_bounds","target": "n_update_state", "post": "forall p in result.snake: p.x >= 0 AND p.x < result.grid_w AND p.y >= 0 AND p.y < result.grid_h" },
+    { "id": "v_sound_freq",     "target": "n_play_eat",     "pre": "freq >= 20.0 AND freq <= 20000.0" },
+    { "id": "v_score_monotonic","target": "n_game_loop",    "invariant": "state_next.score >= state_prev.score" },
+    { "id": "v_no_reverse",     "target": "n_update_state", "pre": "NOT(input==UP AND state.direction==DOWN) AND NOT(input==DOWN AND state.direction==UP) AND NOT(input==LEFT AND state.direction==RIGHT) AND NOT(input==RIGHT AND state.direction==LEFT)" },
+    { "id": "v_framebuf_size",  "target": "n_render",       "post": "result.length <= 16384" }
+  ]
+}

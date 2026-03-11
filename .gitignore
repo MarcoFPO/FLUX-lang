@@ -1,0 +1,27 @@
+# Build artifacts
+/build/
+/target/
+*.o
+*.so
+*.dylib
+*.dll
+*.wasm
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Proto build
+/proto/build/
+__pycache__/
+*.pyc
+
+# FLUX binary artifacts
+*.flux.bin
+*.ftrace
