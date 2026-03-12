@@ -1,138 +1,101 @@
 # FLUX — AI-Native Computation Substrate
 
-**FLUX** ist ein Konzept fuer eine neuartige Ausfuehrungsarchitektur, die **nicht fuer Menschen, sondern fuer KI-Systeme** optimiert ist. Statt Quelltext zu erzeugen, generiert eine KI direkt einen typisierten Computation-Graphen (DAG), der ueber MLIR/LLVM zu nativem Maschinencode fuer jede Zielplattform kompiliert wird.
+**FLUX** ist eine Ausfuehrungsarchitektur, bei der KI-Systeme direkt binaere Computation-Graphen erzeugen, die formal verifiziert und zu optimalem Maschinencode kompiliert werden.
 
-## Kernidee
+**Kein Text. Keine Namen. Keine menschlichen Hilfskonstrukte. Totale Korrektheit.**
+
+## Design-Axiome
 
 ```
-Anforderung (natuerliche Sprache)
-        |
-   KI erzeugt strukturierten Graph (JSON → FLUX DAG)
-        |
-   Validator + SMT-Prover (formale Verifikation)
-        |
-   FLUX → MLIR → LLVM IR
-        |
-   ┌────┴────┬──────────┬──────────┐
-   ARM64    x86-64    RISC-V     WASM
-   nativer Maschinencode pro Plattform
+1. Compile-Zeit ist irrelevant     → Exhaustive Verifikation, Superoptimierung
+2. Lesbarkeit ist irrelevant       → Kein Text, keine Namen, keine Kommentare
+3. Menschliche Kompensationen      → Kein Debug, kein Exception-Handling,
+   werden nicht benoetigt            keine defensive Programmierung
+4. Performance der Codegenerierung → Beliebig viele LLM-Iterationen,
+   ist sekundaer                     beliebig tiefe Analyse
 ```
-
-**Kein Quelltext. Kein Parser. Keine Syntaxfehler.**
-Ein Graph — viele Plattformen — beweisbar korrekt.
-
-## Was FLUX anders macht
-
-| Aspekt | Klassisch (C, Rust, Python) | FLUX |
-|--------|---------------------------|------|
-| Primaere Darstellung | Text (Quellcode) | Typisierter DAG |
-| Erzeugt von | Mensch (+ KI als Assistent) | KI direkt |
-| Seiteneffekte | Implizit, versteckt | Explizit im Graph (C-Node vs. E-Node) |
-| Fehlerbehandlung | Exceptions / panic | F-Nodes als Datenflusspfade |
-| Speicherverwaltung | GC / malloc / Ownership | Region-basiert (Arena, deterministisch) |
-| Formale Verifikation | Optional, externes Tool | Eingebaut (V-Nodes + SMT-Solver) |
-| Hardware-Ziel | Compiler-spezifisch | Ein Graph → alle Plattformen via LLVM |
-| Tests | Separates Artefakt | Automatisch aus Contracts abgeleitet |
 
 ## Architektur
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  KI-GENERATOR (LLM + Structured Output)             │
-│  Iterative Korrekturschleife mit Validator-Feedback  │
-└───────────────────┬─────────────────────────────────┘
-                    │  FLUX Computation Graph
-┌───────────────────▼─────────────────────────────────┐
-│  VALIDATOR + PROVER                                  │
-│  Struktur │ Typen │ Effekte │ Regionen │ SMT-Solver │
-└───────────────────┬─────────────────────────────────┘
-                    │  Verifizierter Graph
-┌───────────────────▼─────────────────────────────────┐
-│  FLUX MLIR-Dialekt → LLVM IR                        │
-└───────┬───────────┬───────────┬─────────────────────┘
-   ┌────▼────┐ ┌────▼────┐ ┌───▼──────┐
-   │ AArch64 │ │ x86-64  │ │ RISC-V64 │  ...
-   │ NEON    │ │ AVX-512 │ │ RVV      │
-   └─────────┘ └─────────┘ └──────────┘
+Anforderung (natuerliche Sprache)
+    │
+KI-Generator (LLM, unbegrenzte Iterationen)
+    │
+    ▼  Binaerer FLUX-Graph (kein JSON, kein Text)
+    │
+Validator (Struktur + Typen + Effekte + Regionen)
+    │  FAIL → zurueck zum LLM (keine Begrenzung)
+    ▼
+Contract Prover (Z3/CVC5/Lean, KEIN Timeout)
+    │  ALLE Contracts muessen PROVEN sein
+    │  Unbewiesener Contract = Graph UNGUELTIG
+    ▼
+Superoptimizer (exhaustive Instruktionssuche)
+    │  Findet optimale Sequenz pro Target
+    ▼
+MLIR → LLVM → nativer Maschinencode
+    │
+┌───┴────┬──────────┬──────────┐
+ARM64   x86-64    RISC-V     WASM
 ```
 
-## Node-Typen
+## Node-Typen (7, reduziert von 11)
 
-| Node | Funktion | Beispiel |
-|------|----------|---------|
-| **C-Node** | Reine Berechnung | `ADD`, `MUL`, `SIN` |
-| **E-Node** | Seiteneffekt (IO) | `SYSCALL_WRITE`, `DB.query` |
-| **K-Node** | Komposition | `SEQ`, `PAR`, `BRANCH`, `LOOP`, `FINALLY` |
-| **F-Node** | Fehlerbehandlung | Recovery-Pfad bei Syscall-Fehler |
-| **V-Node** | Contract (Pre/Post) | `score >= 0`, `array.length <= max` |
-| **M-Node** | Speicheroperation | `ALLOC`, `LOAD`, `STORE` |
-| **R-Node** | Speicherregion | Arena mit Lifetime-Scope |
-| **T-Node** | Typ-Definition | `Int32`, `Array<Float64>` mit Constraints |
-| **H-Node** | Hardware-Hint | `PREFER_VECTOR`, `CACHE_LINE_ALIGN` |
-| **P-Node** | Modul (Package) | Typisiertes Interface, Content-addressiert |
-| **D-Node** | Debug-Mapping | Node-ID → Anforderung + KI-Session |
+| Node | Funktion |
+|------|----------|
+| **C-Node** | Reine Berechnung (ADD, MUL, CONST, ...) |
+| **E-Node** | Seiteneffekt mit exakt 2 Ausgaengen (success + failure) |
+| **K-Node** | Kontrollfluss: Seq, Par, Branch, Loop |
+| **V-Node** | Contract — MUSS bewiesen werden, sonst Graph ungueltig |
+| **T-Node** | Typ mit Constraints |
+| **M-Node** | Speicheroperation (Region-gebunden) |
+| **R-Node** | Speicher-Lifetime (Arena) |
 
-## Speichermodell: Region-basiert
+Entfernt: D-Node (Debug), H-Node (Hints), P-Node (Module), F-Node (Fehlerbehandlung).
 
-Kein Garbage Collector. Kein manuelles `free`. Deterministische Arena-Allokation:
+## Kernprinzipien
 
-```
-R-Node #game (Lifetime: Spielschleife)
-  └── R-Node #frame (Lifetime: 1 Tick, ~150ms)
-        └── Framebuffer, temporaere Daten
-            → am Ende des Ticks automatisch freigegeben (bulk free)
-```
+**Totale Korrektheit:** Jedes Binary ist formal verifiziert. Null Runtime-Checks. Kein Overhead.
 
-## Fehlerbehandlung: Kein Exception-Overhead
+**Keine Fehlerpolicies:** Fehler sind keine Sonderfaelle — sie sind normale Graph-Pfade, die denselben Korrektheitsbeweis durchlaufen wie der Hauptpfad.
 
-Fehler sind normale Datenflusspfade im Graph — kein Stack-Unwinding, kein `try/catch`:
+**Superoptimierung:** Compile-Zeit irrelevant → exhaustive Suche nach der kuerzesten / schnellsten Instruktionssequenz pro Plattform. Besser als handgeschriebener Assembler.
 
-```
-E-Node write() ──ok──→ weiter
-       │
-       └──fail──→ F-Node ──recovery──→ Alternative
-```
-
-Kompiliert zu einem einfachen Branch. Null Overhead im Erfolgsfall.
+**Content-Addressiert:** Keine Variablennamen. Identitaet = BLAKE3-Hash des Inhalts. Gleiche Berechnung = gleicher Hash = automatische Deduplizierung.
 
 ## Dokumentation
 
-- **[FLUX v2 Spezifikation](docs/FLUX-v2-SPEC.md)** — Vollstaendiges technisches Konzept
+- **[FLUX v3 Spezifikation](docs/FLUX-v3-SPEC.md)** — Aktuelle Spezifikation (radikal reduziert)
+- **[FLUX v2 Spezifikation](docs/FLUX-v2-SPEC.md)** — Vorherige Version (mit menschlichen Konzessionen)
 - **[Expertenanalyse](docs/ANALYSIS.md)** — Bewertung durch 3 spezialisierte Agenten
-- **[Hello World Simulation](docs/SIMULATION-hello-world.md)** — Komplette Pipeline von Anforderung bis Maschinencode
-- **[Snake Game Simulation](docs/SIMULATION-snake-game.md)** — Komplexes Beispiel mit Sound, Input, Game Loop
+- **[Hello World Simulation](docs/SIMULATION-hello-world.md)** — Pipeline von Anforderung bis Maschinencode
+- **[Snake Game Simulation](docs/SIMULATION-snake-game.md)** — Komplexes Beispiel mit Sound
 
 ## Beispiele
 
-- [`examples/hello-world.flux.json`](examples/hello-world.flux.json) — Minimales "Hello World"
-- [`examples/snake-game.flux.json`](examples/snake-game.flux.json) — Snake mit Terminal-Rendering und ALSA-Sound
+- [`examples/hello-world.flux.json`](examples/hello-world.flux.json) — Hello World (v2 JSON-Format)
+- [`examples/snake-game.flux.json`](examples/snake-game.flux.json) — Snake Game (v2 JSON-Format)
 
-## Status
+*Hinweis: v3 verwendet kein JSON mehr. Die Beispiele zeigen das v2-Format zur Veranschaulichung.*
 
-**Phase: Konzept / Forschung**
+## Vergleich v2 → v3
 
-Dies ist ein Forschungsprojekt. Die naechsten Schritte:
-
-1. FLUX Binary Format formal spezifizieren
-2. Validator-Prototyp (Rust)
-3. FLUX als MLIR-Dialekt implementieren
-4. KI-Generierungspipeline mit Structured Output
-5. Erstes Target: einfache Arithmetik → x86-64 Binary
-
-## Technische Grundlagen
-
-FLUX baut auf existierenden Forschungsergebnissen auf:
-
-| Konzept | Herkunft |
-|---------|----------|
-| Graph-basierte IR | Sea of Nodes (1995), RVSDG |
-| Multi-Level IR | MLIR (Google/LLVM) |
-| Content-Addressierung | Unison, Nix, Git |
-| Effect-Tracking | Koka (algebraische Effekte), RVSDG |
-| Formale Verifikation | CompCert, CakeML |
-| Region-basierter Speicher | MLKit, Rust Lifetimes |
-
-**Genuint neu**: KI-native Graph-Generierung + Kombination aller Features in einem kohaerenten System.
+```
+Aspekt              v2                         v3
+──────────────────────────────────────────────────────────────
+Node-Typen          11                         7
+Zwischenformat      JSON (menschenlesbar)      Binaer
+Variablennamen      Ja                         Nein (Content-Hash)
+SMT Timeout         5 Sekunden                 Kein Timeout
+Unbewiesene Contr.  Runtime-Check              Graph UNGUELTIG
+LLM-Iterationen     Max 3                      Unbegrenzt
+Compile-Zeit        ~2 Sekunden                Minuten bis Stunden
+Debug-Support       Ja (D-Node + Trace)        Keiner
+Optimierung         LLVM -O3                   Superoptimizer
+Runtime-Checks      0-N pro Binary             EXAKT 0
+Korrektheitsgarantie Teilweise                 Total
+```
 
 ## Lizenz
 
