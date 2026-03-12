@@ -49,7 +49,7 @@ FLUX-System
 ARM64   x86-64    RISC-V     WASM
 ```
 
-## Node-Typen (7, reduziert von 11)
+## Node-Typen
 
 | Node | Funktion |
 |------|----------|
@@ -61,7 +61,6 @@ ARM64   x86-64    RISC-V     WASM
 | **M-Node** | Speicheroperation (Region-gebunden) |
 | **R-Node** | Speicher-Lifetime (Arena) |
 
-Entfernt: D-Node (Debug), H-Node (Hints), P-Node (Module), F-Node (Fehlerbehandlung).
 
 ## Kernprinzipien
 
@@ -101,23 +100,6 @@ ERFINDE      "Verbessere sort(), erfinde Neues"→ Explorative Synthese + Evolut
 ENTDECKE     "Finde Berechnung mit Eigenschaft X" → Offene Suche im Graphen-Raum
 ```
 
-## Vergleich v2 → v3
-
-```
-Aspekt              v2                         v3
-──────────────────────────────────────────────────────────────
-Node-Typen          11                         7 (+Summentyp, +Funktionstyp)
-LLM-Eingabe         JSON                       FTL (Text, LLM-optimiert)
-Internes Format     JSON                       Binaer (System berechnet Hashes)
-SMT Timeout         5 Sekunden                 Gestaffelt: 60s/300s/3600s/Lean
-Unbewiesene Contr.  Runtime-Check              Inkubation + Eskalation
-Contract-Sprache    Informell                  SMT-LIB2-Subset
-Optimierung         LLVM -O3                   3-stufig: LLVM + MLIR + STOKE
-Concurrency         Nicht definiert            K:Par + atomare Ops
-FFI                 Nicht definiert            Extern-Deklarationen + Trust
-MLIR-Lowering       Nicht definiert            5-Phasen-Pipeline
-Scope               Nicht definiert            Klar abgegrenzt
-```
 
 ## Lizenz
 
