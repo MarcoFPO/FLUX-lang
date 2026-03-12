@@ -68,7 +68,7 @@ Entfernt: D-Node (Debug), H-Node (Hints), P-Node (Module), F-Node (Fehlerbehandl
 
 **Wachsende Wissensbasis:** Jedes akzeptierte Binary erweitert ein Graph Repository. Neuartigkeits-Metriken verhindern Stagnation. Das System wird ueber Zeit kreativer.
 
-**Biologisches Mutations-Modell:** Kreativitaet folgt dem Prinzip der zellulaeren Mutation — neutrale Varianten werden TOLERIERT (nicht sofort eliminiert), akkumulieren ueber Generationen, und erzeugen durch Emergenz qualitativ neue Algorithmen. V-Nodes sind das perfekte Immunsystem: Korrektheit ist unfehlbar, Kreativitaet ist frei.
+**Biologisches Mutations-Modell:** Kreativitaet folgt dem Prinzip der zellulaeren Mutation. Fehlerhafte Graphen werden NICHT eliminiert — sie werden in einer Inkubations-Zone isoliert weiterentwickelt. Eine Mutation auf eine Mutation kann etwas augenscheinlich "Schlechtes" zu etwas "Besonderem" machen. Fehler sind kein Todesurteil, sondern Rohmaterial fuer Innovation. Nur das fertige Binary muss bewiesen korrekt sein — der Weg dorthin darf durch Fehler fuehren.
 
 ## Dokumentation
 

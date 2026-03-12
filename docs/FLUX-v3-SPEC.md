@@ -190,36 +190,259 @@ v3: E-Node ohne Policy. Jeder E-Node hat exakt ZWEI Ausgangskanten:
 ```
 
 
-## 7. Contract-System — Totale Korrektheit
+## 7. Contract-System — Fehlertolerante Evolution
+
+### Paradigmenwechsel: Quarantaene statt Hinrichtung
 
 ```
-v2:                                    v3:
-─────────────────────────────────────────────────────────────
-PROVEN   → entfernt, 0 Overhead       PROVEN   → entfernt, 0 Overhead
-DISPROVEN→ Feedback ans LLM           DISPROVEN→ Graph UNGUELTIG
-TIMEOUT  → Runtime-Check (Branch)     TIMEOUT  → Prover laeuft weiter
-                                                  (KEIN Timeout)
-
-Konsequenz:
-- Jedes Binary ist BEWIESENERMASSEN korrekt
-  bezueglich aller spezifizierten Contracts
-- Kein einziger Runtime-Check im fertigen Binary
-- 0 Overhead fuer Korrektheit
-- Wenn der Prover einen Contract nicht beweisen kann:
-  → Graph wird verworfen
-  → LLM muss einen beweisbaren Graph erzeugen
-  → Oder den Contract reformulieren
+v2:                     v3-alt:                  v3-NEU:
+─────────────────────────────────────────────────────────────────────
+PROVEN   → 0 Overhead   PROVEN   → 0 Overhead    PROVEN   → 0 Overhead
+DISPROVEN→ Feedback LLM  DISPROVEN→ VERWORFEN     DISPROVEN→ INKUBATION
+TIMEOUT  → Runtime-Check TIMEOUT  → kein Timeout  TIMEOUT  → INKUBATION
 ```
 
-**Prover-Strategie (Compile-Zeit irrelevant):**
+Ein Graph mit verletztem Contract wird NICHT verworfen.
+Er wird in die INKUBATIONS-ZONE verschoben.
+Dort wird er weiter mutiert.
+Eine Folge-Mutation kann den Fehler HEILEN — und dabei etwas
+hervorbringen das BESSER ist als der fehlerfreie Ausgangszustand.
 
 ```
-Phase 1: Z3 / CVC5 (automatische SMT-Solver)
-Phase 2: Bei Timeout → Bounded Model Checking (CBMC, KLEE)
-Phase 3: Bei Timeout → Symbolische Ausfuehrung (alle Pfade)
-Phase 4: Bei Timeout → Interaktiver Beweisassistent (Lean 4 / Coq)
-         KI erzeugt den Beweis selbst (LLM → Lean Tactic)
-Phase 5: Exhaustive Enumeration fuer endliche Domaenen
+Der Weg durch den Fehler:
+
+Graph A (korrekt, langsam)
+    │
+    │ Mutation M1
+    ▼
+Graph A' (FEHLERHAFT — Contract V3 verletzt)
+    │
+    │ In klassischem Modell: → VERWORFEN. Ende.
+    │ In FLUX v3:            → INKUBATION. Weiter mutieren.
+    │
+    │ Mutation M2
+    ▼
+Graph A'' (KORREKT — alle Contracts erfuellt, UND 3x schneller!)
+    │
+    │ Die Kombination M1+M2 hat etwas erschaffen,
+    │ das durch M2 ALLEIN nie entstanden waere.
+    │ M1 war der "Fehler" der noetig war.
+    │
+    ▼
+Ergebnis: Neuartiger Algorithmus, bewiesen korrekt, ueberlegen.
+```
+
+Biologische Parallele:
+```
+Sichelzelleanaemie:
+  Mutation 1: Haemoglobin-Gen veraendert → rote Blutzellen sichelfoermig
+              → SCHAEDLICH (Anaemie, Organschaeden)
+              → In "perfektem Immunsystem" → eliminiert
+
+  ABER: Sichelzellen sind resistent gegen Malaria.
+  → In Malaria-Gebieten ist die "schadhafte" Mutation ein VORTEIL.
+  → Heterozygote Traeger: milde Sichelzellen + Malaria-Resistenz = OPTIMAL.
+
+  Haette das Immunsystem die erste Mutation sofort eliminiert,
+  waere die Malaria-Resistenz NIE entstanden.
+
+FLUX-Analogie:
+  Mutation 1: Sort-Algorithmus verletzt Stabilitaets-Contract
+              → FEHLERHAFT (instabile Sortierung)
+              → In "perfektem Immunsystem" → eliminiert
+
+  ABER: Die instabile Variante hat ein Cache-Zugriffsmuster
+  das 5x schneller ist.
+
+  Mutation 2: Repariert Stabilitaet durch Tie-Breaking auf Originalindex
+              → KORREKT + 5x SCHNELLER als der Ausgangsgraph
+
+  Der Umweg ueber den Fehler war der SCHLUESSEL.
+```
+
+
+### Drei Zustaende eines Graphen
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                  │
+│  GESUND (alle Contracts bewiesen)                               │
+│  ═══════════════════════════════                                │
+│  → Kann zu Binary kompiliert werden                             │
+│  → Lebt in Elite-Zone oder Toleranz-Zone                       │
+│  → Wird fuer Fitness bewertet                                   │
+│  → Darf gekreuzt werden                                        │
+│                                                                  │
+│  INKUBIERT (mindestens 1 Contract verletzt oder unbewiesen)     │
+│  ══════════════════════════════════════════════════════════      │
+│  → Kann NICHT zu Binary kompiliert werden                       │
+│  → Lebt in der Inkubations-Zone (isoliert)                     │
+│  → Wird WEITER MUTIERT (mit erhoehter Rate)                    │
+│  → Wird NICHT fuer Fitness bewertet (noch nicht lauffaehig)     │
+│  → Traegt Markierung: welche Contracts verletzt sind            │
+│  → Traegt Markierung: wie viele Generationen in Inkubation     │
+│  → Kann durch Mutation GESUND werden → aufsteigen              │
+│  → Wird nach N Generationen ohne Heilung entfernt              │
+│                                                                  │
+│  TOT (strukturell ungueltig)                                    │
+│  ═══════════════════════════                                    │
+│  → Validator FAIL (kein DAG, Typ-Fehler, Region-Escape)        │
+│  → Kann NICHT repariert werden durch einfache Mutation          │
+│  → Wird sofort verworfen                                       │
+│  → EINZIGER Zustand der zur Eliminierung fuehrt                │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+
+Unterscheidung: STRUKTURELL ungueltig vs. SEMANTISCH fehlerhaft
+
+  STRUKTURELL ungueltig:          SEMANTISCH fehlerhaft:
+  Zyklen im DAG                   Contract verletzt
+  Typ-Mismatch an Kanten          Falsches Ergebnis
+  Region-Escape                   Out-of-Bounds (unbewiesen)
+  Fehlende Inputs                 Terminierung nicht beweisbar
+
+  → TOT (nicht reparierbar        → INKUBIERT (reparierbar
+    durch Punkt-Mutation)           durch Punkt-Mutation)
+```
+
+
+### Inkubations-Zone: Regeln
+
+```
+1. AUFNAHME
+   Graph besteht Validator (strukturell ok)
+   ABER: mindestens 1 V-Node ist DISPROVEN oder UNRESOLVED
+   → Graph wird in Inkubations-Zone aufgenommen
+   → Markierung: {verletzt: [V3, V7], generation: 0}
+
+2. MUTATION
+   Inkubierte Graphen werden mit ERHOEHTER RATE mutiert:
+   - Normal: 30% Mutation pro Generation
+   - Inkubiert: 60% Mutation pro Generation
+   - Mutationen werden GEZIELT in der Naehe der verletzten
+     Contracts angewendet (der Prover liefert Gegenbeispiele
+     die als Hinweis dienen WO der Fehler liegt)
+
+3. RE-EVALUATION
+   Nach jeder Mutation:
+   - Validator: strukturell ok? → weiter. Sonst → TOT.
+   - Prover: Contracts pruefen.
+     → Alle PROVEN: HEILUNG! → Aufstieg in Toleranz-Zone
+     → Weniger Verletzungen als vorher: Fortschritt, weiter mutieren
+     → Mehr Verletzungen: Rueckschritt, aber NICHT eliminieren
+       (Rueckschritte koennen spaeter zu Spruengen fuehren)
+
+4. ALTERUNG
+   Inkubations-Zaehler steigt pro Generation.
+   Nach MAX_INCUBATION Generationen ohne Heilung:
+   → Graph wird entfernt (Ressourcen-Limit)
+   → Aber: Graph wird im ARCHIV gespeichert (nicht im aktiven Pool)
+   → Archivierte Graphen koennen spaeter wiederbelebt werden
+     wenn neue Mutations-Strategien verfuegbar sind
+
+5. HEILUNG
+   Wenn ein inkubierter Graph alle Contracts erfuellt:
+   → Sofortige Fitness-Bewertung
+   → Aufstieg in Elite/Toleranz basierend auf Fitness
+   → BONUS: Geheilte Graphen erhalten Neuartigkeits-Bonus
+     (der Umweg durch den Fehler hat oft ungewoehnliche
+      Strukturen hervorgebracht)
+```
+
+
+### Pool-Architektur (revidiert)
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  POOL (1000-10000 Graphen)                                    │
+│                                                               │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ ELITE-ZONE (10%)                                       │  │
+│  │ Bewiesen korrekt. Beste Fitness.                       │  │
+│  │ Werden nie entfernt. Eltern fuer Kreuzung.             │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                               │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ TOLERANZ-ZONE (40%)                                    │  │
+│  │ Bewiesen korrekt. Neutrale Drift.                      │  │
+│  │ Kein Selektionsdruck. Akkumulation.                    │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                               │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ INKUBATIONS-ZONE (30%)                                 │  │
+│  │ Contract-Verletzungen. Strukturell valide.             │  │
+│  │ Erhoehte Mutationsrate. Gezielte Reparatur-Mutationen.│  │
+│  │ Koennen durch Mutation HEILEN → Aufstieg.             │  │
+│  │ Werden nach MAX_INCUBATION archiviert.                │  │
+│  │                                                        │  │
+│  │ Markierungen pro Graph:                                │  │
+│  │   violated_contracts: [V3, V7]                         │  │
+│  │   counterexamples: [{input: [5,3,1], expected: ...}]  │  │
+│  │   incubation_gen: 47                                   │  │
+│  │   healing_trend: improving / stagnating / regressing   │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                               │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ PRUEF-ZONE (20%)                                       │  │
+│  │ Neue Mutationen und Kreuzungen.                        │  │
+│  │ Validator → Prover → Routing:                          │  │
+│  │   Alle Contracts proven → Toleranz/Elite               │  │
+│  │   Manche Contracts verletzt → Inkubation               │  │
+│  │   Strukturell ungueltig → TOT (verwerfen)             │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                               │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ ARCHIV (unbegrenzt, persistent)                        │  │
+│  │ Entfernte Inkubations-Graphen.                         │  │
+│  │ Nicht im aktiven Pool. Kein Ressourcenverbrauch.       │  │
+│  │ Koennen wiederbelebt werden bei neuen Strategien.      │  │
+│  └────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────┘
+
+Fluss:
+  Pruef-Zone ──proven──→ Toleranz-Zone ──beste──→ Elite-Zone
+      │                       │
+      │──verletzt──→ Inkubations-Zone ──geheilt──→ Toleranz-Zone
+      │                       │
+      │──strukturell──→ TOT   │──timeout──→ Archiv
+         ungueltig                          (wiederbelebbar)
+```
+
+
+### Kompilierungs-Gate
+
+```
+NUR Graphen aus Elite-Zone oder Toleranz-Zone koennen zu Binaries
+kompiliert werden. Das garantiert:
+
+  ✓ Jedes BINARY ist bewiesen korrekt
+  ✗ Nicht jeder GRAPH im Pool ist korrekt (Inkubations-Zone)
+
+Die Inkubations-Zone ist ein LABOR, kein Produktionssystem.
+Fehlerhafte Graphen existieren, werden erforscht, koennen heilen.
+Aber sie verlassen das Labor erst wenn sie gesund sind.
+
+  Pool-Ebene:  Fehlertoleranz (Inkubation, Mutation, Heilung)
+  Binary-Ebene: Totale Korrektheit (nur bewiesene Graphen)
+```
+
+
+### Prover-Strategie (revidiert)
+
+```
+Fuer GESUNDE Graphen (→ Binary):
+  Phase 1: Z3 / CVC5 (automatische SMT-Solver)
+  Phase 2: Bounded Model Checking (CBMC, KLEE)
+  Phase 3: Symbolische Ausfuehrung
+  Phase 4: Lean 4 / Coq (KI erzeugt Beweis)
+  Phase 5: Exhaustive Enumeration
+  → Alle Phasen, kein Timeout, Binary nur wenn PROVEN
+
+Fuer INKUBIERTE Graphen (→ Diagnose):
+  Nur Phase 1: Z3 schnell-Check (Timeout: 10s)
+  Ziel: Nicht beweisen, sondern GEGENBEISPIELE finden
+  Gegenbeispiele leiten gezielte Reparatur-Mutationen
+  → Schnelle Diagnose, nicht vollstaendiger Beweis
 ```
 
 
@@ -709,7 +932,7 @@ aus dem spaeter Innovation entsteht.
 ```
 
 
-**Das Immunsystem: V-Nodes als Krebsschutz**
+**Das Immunsystem: V-Nodes als Diagnose, nicht als Todesurteil**
 
 ```
 Biologie:
@@ -717,16 +940,27 @@ Biologie:
   ABER: Immunsystem ist NICHT perfekt
   → Krebs kann durchrutschen
   → Autoimmun kann gesunde Zellen zerstoeren
+  → UND: Manchmal ist die "Entartung" nuetzlich
+    (Sichelzellen → Malaria-Resistenz)
 
 FLUX:
-  V-Nodes (Contracts) erkennen fehlerhafte Graphen → Eliminierung
-  UND: V-Nodes sind FORMAL BEWEISBAR
-  → Kein "Krebs" kann durchrutschen (totale Korrektheit)
-  → Kein "Autoimmun" (bewiesene Graphen werden nie faelschlich eliminiert)
+  V-Nodes erkennen fehlerhafte Graphen → INKUBATION (nicht Eliminierung)
+  Der Fehler wird DIAGNOSTIZIERT, nicht BESTRAFT.
 
-  Das ist der ENTSCHEIDENDE VORTEIL gegenueber Biologie:
-  FLUX hat ein PERFEKTES Immunsystem.
-  Kreativitaet kann MAXIMAL sein, weil der Filter UNFEHLBAR ist.
+  Zwei Schutzschichten:
+  1. POOL-EBENE: Fehlertolerant.
+     Fehlerhafte Graphen werden isoliert weitergefuehrt.
+     Gezielte Mutationen versuchen Heilung.
+     Der Fehler kann der SCHLUESSEL zur Innovation sein.
+
+  2. BINARY-EBENE: Unfehlbar.
+     Nur bewiesene Graphen werden kompiliert.
+     Kein fehlerhaftes Binary kann je entstehen.
+
+  FLUX hat KEIN perfektes Immunsystem — es hat ein KLUGES:
+  Es eliminiert nicht blind, es forscht.
+  Es toetet nicht den Patienten, es heilt ihn.
+  Und manchmal ist die Krankheit die Kur.
 ```
 
 
@@ -763,10 +997,11 @@ FLUX:
 │                                                               │
 │  Groessere Mutationen: Subgraphen wachsen, neue Pfade        │
 │  entstehen, redundante Berechnungen werden eingefuegt.       │
+│  Manche Mutationen VERLETZEN Contracts.                      │
 │                                                               │
-│  Die Graphen werden GROESSER und KOMPLEXER.                  │
-│  Das ist die "Wucherung" — neues Gewebe das noch             │
-│  keine klare Funktion hat.                                   │
+│  Die Graphen werden GROESSER, KOMPLEXER, und TEILWEISE       │
+│  FEHLERHAFT. Das ist die "Wucherung" — neues Gewebe das      │
+│  noch keine klare Funktion hat und manchmal stoert.          │
 │                                                               │
 │  Beispiel:                                                   │
 │    Graph #42 (Generation 73) hat jetzt:                      │
@@ -774,11 +1009,15 @@ FLUX:
 │    - Eine redundante Berechnung die nie genutzt wird         │
 │    - Einen alternativen Pfad der bei bestimmten Inputs       │
 │      aktiv wird                                              │
+│    - Contract V3 ist VERLETZT (Sortierung instabil)          │
+│      → Graph wandert in Inkubations-Zone                     │
+│      → Wird weiter mutiert                                   │
 │                                                               │
-│  Performance: leicht SCHLECHTER (mehr Nodes, mehr Overhead)  │
-│  Contract: erfuellt. → TOLERIEREN.                           │
+│  Das ist KEIN Fehler des Systems — das ist das MATERIAL      │
+│  aus dem Innovation entsteht.                                │
 │                                                               │
-│  Die Wucherung ist das Rohmaterial fuer Innovation.          │
+│  Die Wucherung DARF stoeren. Sie DARF fehlerhaft sein.       │
+│  Sie wird nicht eliminiert. Sie wird weiterentwickelt.       │
 └──────────────────────────┬───────────────────────────────────┘
                            │
 ┌──────────────────────────▼───────────────────────────────────┐
@@ -790,23 +1029,33 @@ FLUX:
 │                                                               │
 │  Beispiel:                                                   │
 │    Graph #42 (Generation 217):                               │
-│    - Vorverarbeitungs-Subgraph aus Phase 2 wird jetzt        │
-│      GENUTZT: er partitioniert Daten nach einem Muster       │
-│      das zufaellig entstand                                  │
-│    - Alternativer Pfad aus Phase 2 wird zum HAUPTPFAD:       │
-│      er ist fuer die partitionierten Daten schneller         │
-│    - Redundante Berechnung wird ELIMINIERT durch eine        │
-│      weitere Mutation                                        │
+│    - War seit Generation 73 in der INKUBATIONS-ZONE          │
+│      (Contract V3 verletzt: instabile Sortierung)            │
+│    - Generation 73-216: 143 weitere Mutationen               │
+│      manche verbesserten, manche verschlechterten            │
+│      der Graph BLIEB fehlerhaft — wurde TOLERIERT            │
+│    - Generation 217: Mutation M144 fuegt Tie-Breaking ein    │
+│      (Originalindex als sekundaerer Sortierschluessel)       │
+│      → Contract V3 ist WIEDER ERFUELLT (stabile Sortierung)  │
+│      → HEILUNG! Graph steigt auf in Toleranz-Zone            │
+│                                                               │
+│  ABER: Der Graph ist nicht nur "repariert".                   │
+│  Durch die 143 Mutationen WAEHREND der Inkubation hat er:    │
+│    - Ein Cache-Zugriffsmuster das zufaellig entstand         │
+│    - Eine Partitionierung die fuer SIMD optimiert ist        │
+│    - Einen alternativen Pfad fuer fast-sortierte Daten       │
 │                                                               │
 │  Ergebnis: Ein NEUARTIGER ALGORITHMUS                        │
 │    - Niemand hat ihn entworfen                               │
-│    - Er entstand durch Akkumulation neutraler Mutationen     │
-│    - Er ist BEWIESEN korrekt (Contracts gelten)              │
-│    - Er ist MESSBAR schneller                                │
-│    - Er hat KEINEN NAMEN — er ist eine Emergenz              │
+│    - Er entstand durch den UMWEG UEBER DEN FEHLER            │
+│    - Er ist BEWIESEN korrekt (alle Contracts gelten)         │
+│    - Er ist 5x SCHNELLER als der Ausgangsgraph               │
+│    - Der "Fehler" war NOTWENDIG fuer die Innovation          │
+│    - Ohne Inkubation waere er in Generation 73 eliminiert    │
+│      worden und diese Loesung haette nie existiert           │
 │                                                               │
 │  Fitness-Bewertung: → Pareto-Front, ueberlegen              │
-│  → BEHALTEN als neue Referenz                                │
+│  → Aufstieg in ELITE-ZONE                                   │
 └──────────────────────────┬───────────────────────────────────┘
                            │
 ┌──────────────────────────▼───────────────────────────────────┐
@@ -861,22 +1110,25 @@ Pool-Struktur:
 Pool-Parameter:
   POOL_SIZE:           1000-10000 Graphen
   ELITE_RATIO:         0.10
-  TOLERANCE_RATIO:     0.60
-  PROBE_RATIO:         0.30
-  MUTATIONS_PER_GEN:   Pool * 0.3 (30% neue Mutationen pro Generation)
-  CROSSOVER_PER_GEN:   Pool * 0.1 (10% Kreuzungen pro Generation)
+  TOLERANCE_RATIO:     0.40
+  INCUBATION_RATIO:    0.30
+  PROBE_RATIO:         0.20
+  MUTATIONS_PER_GEN:   Pool * 0.3 (Toleranz: 30%, Inkubation: 60%)
+  CROSSOVER_PER_GEN:   Pool * 0.1 (nur zwischen gesunden Graphen)
+  MAX_INCUBATION:      500 Generationen (dann → Archiv)
   MAX_GENERATIONS:     unbegrenzt (bis Abbruchkriterium)
   CONVERGENCE_CHECK:   alle 50 Generationen
 
   Abbruchkriterien:
   - Fitness-Plateau (keine Verbesserung seit 100 Generationen)
   - Neuartigkeits-Plateau (SGD stagniert)
+  - Heilungsrate in Inkubation sinkt auf 0
   - Externe Unterbrechung
   - NICHT: Zeitlimit (Zeit ist irrelevant)
 ```
 
 
-**Vergleich: Warum FLUX besser ist als Biologie**
+**Vergleich: FLUX uebernimmt Biologie INKLUSIVE Fehlertoleranz**
 
 ```
                         Biologie              FLUX
@@ -884,32 +1136,40 @@ Pool-Parameter:
 Mutationsrate           Festgelegt (~10⁻⁸    Steuerbar (0.01 bis 0.5
                         pro Basenpaar)        pro Node pro Generation)
 
-Immunsystem             Fehlbar (Krebs)       Unfehlbar (formaler Beweis)
+Fehlertoleranz          Ja (Zellen mit        Ja (Graphen mit Contract-
+                        DNA-Schaeden leben    Verletzung leben in
+                        oft weiter)           Inkubations-Zone weiter)
+
+Heilung durch           Ja (DNA-Reparatur,    Ja (Folge-Mutation kann
+weitere Mutation        kompensatorische      Contract wiederherstellen)
+                        Mutation)
+
+Fehler als Vorteil      Ja (Sichelzellen →    Ja (Instabiler Sort →
+                        Malaria-Resistenz)    5x schnellerer Sort)
 
 Generationszeit         Minuten bis Jahre     Millisekunden bis Sekunden
-
-Bewertung               Langfristig, durch    Sofort, durch Sandbox-
-                        Ueberleben            Execution + SMT-Beweis
 
 Kreuzung                Nur innerhalb         Zwischen beliebigen
                         einer Spezies         kompatiblen Graphen
 
-Gerichtete Mutation     Nicht moeglich        Moeglich (LLM kann gezielt
-                        (Lamarck widerlegt)   "interessante" Stellen mutieren)
+Gerichtete Mutation     Nicht moeglich        Moeglich (LLM + Gegenbeispiele
+                        (Lamarck widerlegt)   aus Prover als Reparatur-Hints)
 
-Rueckschritt            Moeglich (Verlust     Unmoeglich (Elite-Zone
-                        von Anpassungen)      bewahrt beste Varianten)
+Rueckschritt            Moeglich (Verlust     Erlaubt in Inkubation,
+                        von Anpassungen)      Elite bewahrt beste Varianten
 
-Parallelitaet           Limitiert durch       Beliebig (1000 Mutationen
-                        Populationsgroesse    parallel bewerten)
+Krebs (entarteter       Moeglich, toedlich    Unmoeglich auf Binary-Ebene
+Output)                                       (nur bewiesene Graphen kompiliert)
+
+Parallelitaet           Limitiert             Beliebig (1000 Mutationen
+                                              parallel bewerten)
 ```
 
-Das entscheidende: FLUX nimmt das biologische Prinzip der kumulativen
-neutralen Mutation und ENTFERNT die Schwaechen der Biologie:
-- Kein Krebs (perfektes Immunsystem)
-- Keine Sackgassen (gerichtete Mutation via LLM)
-- Kein Vergessen (Elite-Zone)
-- Keine Generationsgrenzen (Millisekunden statt Jahre)
+FLUX uebernimmt das biologische Modell VOLLSTAENDIG:
+- Fehlertoleranz wie in der Natur (Inkubation statt Eliminierung)
+- Kumulative Mutation wie in der Natur (neutrale Drift + Wucherung)
+- Heilung durch den Fehler wie in der Natur (Sichelzell-Prinzip)
+- ABER: Krebs auf Binary-Ebene unmoeglich (formaler Beweis als Gate)
 
 
 ### Anforderungstypen fuer Kreativitaet
