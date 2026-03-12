@@ -376,6 +376,10 @@ pub enum Formula {
         node: NodeRef,
         fields: Vec<String>,
     },
+    PredicateCall {
+        name: String,
+        args: Vec<Formula>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -403,6 +407,11 @@ pub enum Expr {
     BinOp { left: Box<Expr>, op: ArithBinOp, right: Box<Expr> },
     Result,
     State,
+    PredicateCall {
+        name: String,
+        args: Vec<Expr>,
+    },
+    EmptySet,
 }
 
 #[derive(Debug, Clone, Serialize)]

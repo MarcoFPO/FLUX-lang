@@ -1112,21 +1112,31 @@ fn check_extern_types(
                     for (i, (input, param_tr)) in inputs.iter().zip(ext.params.iter()).enumerate() {
                         if let Some(input_tr) = compute_type_map.get(input.as_str()) {
                             if !types_match(input_tr, param_tr) {
-                                errors.push(CheckError {
-                                    error_code: 3005,
-                                    node_id: node_id.clone(),
-                                    violation: "FN_PARAM_MISMATCH".into(),
-                                    message: format!(
-                                        "call_extern {} to '{}': parameter {} expects type {}, but input {} has type {}",
-                                        node_id,
-                                        ext.name,
-                                        i,
-                                        type_ref_label(param_tr, type_index),
-                                        input,
-                                        type_ref_label(input_tr, type_index),
-                                    ),
-                                    suggestion: None,
-                                });
+                                // In FFI context, arrays implicitly decay to pointers.
+                                // An array type is compatible with an integer type that
+                                // represents a pointer (the array's base address).
+                                let is_array_to_ptr = matches!(
+                                    (resolve_type(input_tr, type_index), resolve_type(param_tr, type_index)),
+                                    (Some(TypeBody::Array { .. }), Some(TypeBody::Integer { .. }))
+                                    | (Some(TypeBody::Array { .. }), Some(TypeBody::Opaque { .. }))
+                                );
+                                if !is_array_to_ptr {
+                                    errors.push(CheckError {
+                                        error_code: 3005,
+                                        node_id: node_id.clone(),
+                                        violation: "FN_PARAM_MISMATCH".into(),
+                                        message: format!(
+                                            "call_extern {} to '{}': parameter {} expects type {}, but input {} has type {}",
+                                            node_id,
+                                            ext.name,
+                                            i,
+                                            type_ref_label(param_tr, type_index),
+                                            input,
+                                            type_ref_label(input_tr, type_index),
+                                        ),
+                                        suggestion: None,
+                                    });
+                                }
                             }
                         }
                     }
@@ -1487,5 +1497,70 @@ mod tests {
         });
         let errors = check_types_and_effects(&p);
         assert!(errors.iter().any(|e| e.error_code == 3005));
+    }
+
+    #[test]
+    fn test_ffi_array_to_pointer_coercion() {
+        let mut p = empty_program();
+        // T:ptr — pointer type (u64 integer)
+        p.types.push(TypeDef {
+            id: NodeRef::new("T:ptr"),
+            body: TypeBody::Integer { bits: 64, signed: false },
+        });
+        // T:buf — array type
+        p.types.push(TypeDef {
+            id: NodeRef::new("T:buf"),
+            body: TypeBody::Array {
+                element: TypeRef::Id { node: NodeRef::new("T:ptr") },
+                max_length: 256,
+                constraint: None,
+            },
+        });
+        // Extern expecting a pointer param
+        p.externs.push(ExternDef {
+            id: NodeRef::new("X:ext_arr"),
+            name: "fopen".into(),
+            abi: Abi::C,
+            params: vec![TypeRef::Id { node: NodeRef::new("T:ptr") }],
+            result: TypeRef::Id { node: NodeRef::new("T:ptr") },
+            effects: vec!["IO".into()],
+        });
+        // Compute node producing an array value
+        p.computes.push(ComputeDef {
+            id: NodeRef::new("C:arr"),
+            op: ComputeOp::Const {
+                value: Literal::Integer { value: 0 },
+                type_ref: TypeRef::Id { node: NodeRef::new("T:buf") },
+                region: None,
+            },
+        });
+        // Control flow nodes for success/failure
+        p.controls.push(ControlDef {
+            id: NodeRef::new("K:s"),
+            op: ControlOp::Seq { steps: vec![] },
+        });
+        p.controls.push(ControlDef {
+            id: NodeRef::new("K:f"),
+            op: ControlOp::Seq { steps: vec![] },
+        });
+        // Call extern passing array where pointer is expected — should be accepted
+        p.effects.push(EffectDef {
+            id: NodeRef::new("E:call"),
+            op: EffectOp::CallExtern {
+                target: NodeRef::new("X:ext_arr"),
+                inputs: vec![NodeRef::new("C:arr")],
+                type_ref: TypeRef::Id { node: NodeRef::new("T:ptr") },
+                effects: vec!["IO".into()],
+                success: NodeRef::new("K:s"),
+                failure: NodeRef::new("K:f"),
+            },
+        });
+        let errors = check_types_and_effects(&p);
+        // No 3005 errors — array→pointer coercion should be allowed
+        assert!(
+            !errors.iter().any(|e| e.error_code == 3005),
+            "Expected no 3005 errors for array-to-pointer coercion in FFI, but got: {:?}",
+            errors,
+        );
     }
 }

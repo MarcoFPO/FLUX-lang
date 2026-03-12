@@ -938,21 +938,17 @@ fn parse_formula_primary_as_formula(pair: pest::iterators::Pair<Rule>) -> Result
             }
         }
         Rule::formula_empty_set => {
-            // {} empty set -- represent as a special ident
-            Ok(Formula::FieldAccess {
-                node: NodeRef::new("{}"),
-                fields: vec![],
-            })
+            // {} empty set - represent as a bool placeholder in formula position
+            Ok(Formula::BoolLit { value: false })
         }
         Rule::formula_func_call => {
-            // Function call as a formula -- treat as field access
             let mut parts = inner.into_inner();
             let name = parts.next().unwrap().as_str().to_string();
-            // For now, represent as FieldAccess with empty node
-            Ok(Formula::FieldAccess {
-                node: NodeRef::new(name),
-                fields: vec![],
-            })
+            let args = parts
+                .filter(|p| p.as_rule() == Rule::formula)
+                .map(|p| parse_formula(p))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Formula::PredicateCall { name, args })
         }
         Rule::formula_special => {
             match inner.as_str() {
@@ -1269,25 +1265,39 @@ fn parse_expr_from_primary_inner(inner: pest::iterators::Pair<Rule>) -> Result<E
         Rule::formula_func_call => {
             let mut parts = inner.into_inner();
             let name = parts.next().unwrap().as_str().to_string();
-            // Collect arguments
-            let mut args = Vec::new();
-            for arg in parts {
-                if arg.as_rule() == Rule::formula {
-                    args.push(arg.as_str().trim().to_string());
-                }
-            }
-            // Represent as Ident with function name
-            Ok(Expr::Ident {
-                name: if args.is_empty() {
-                    format!("{}()", name)
-                } else {
-                    format!("{}({})", name, args.join(", "))
-                },
-            })
+            let args = parts
+                .filter(|p| p.as_rule() == Rule::formula)
+                .map(|p| {
+                    // Convert formula to expr by drilling through the grammar layers
+                    let formula_or = p.into_inner().next().unwrap();
+                    let or_parts: Vec<pest::iterators::Pair<Rule>> =
+                        formula_or.into_inner().collect();
+                    if or_parts.len() == 1 {
+                        let and = or_parts.into_iter().next().unwrap();
+                        let and_parts: Vec<pest::iterators::Pair<Rule>> =
+                            and.into_inner().collect();
+                        if and_parts.len() == 1 {
+                            let not = and_parts.into_iter().next().unwrap();
+                            let not_parts: Vec<pest::iterators::Pair<Rule>> =
+                                not.into_inner().collect();
+                            if not_parts.len() == 1 {
+                                let cmp = not_parts.into_iter().next().unwrap();
+                                let cmp_parts: Vec<pest::iterators::Pair<Rule>> =
+                                    cmp.into_inner().collect();
+                                if cmp_parts.len() == 1 {
+                                    return parse_formula_additive_as_expr(
+                                        cmp_parts.into_iter().next().unwrap(),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Ok(Expr::IntLit { value: 0 })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Expr::PredicateCall { name, args })
         }
-        Rule::formula_empty_set => {
-            Ok(Expr::Ident { name: "{}".to_string() })
-        }
+        Rule::formula_empty_set => Ok(Expr::EmptySet),
         Rule::formula_forall => {
             // forall as expr -- shouldn't happen normally
             Ok(Expr::IntLit { value: 0 })

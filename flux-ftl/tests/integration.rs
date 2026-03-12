@@ -1347,3 +1347,66 @@ fn serialize_minimal_to_json() {
     assert!(json.contains("\"status\":\"OK\""));
     assert!(json.contains("\"entry\""));
 }
+
+// ===========================================================================
+// PredicateCall and EmptySet in formulas
+// ===========================================================================
+
+#[test]
+fn formula_predicate_call() {
+    let input = r#"
+T:a1 = integer { bits: 64, signed: false }
+C:c0 = const { value: 0, type: T:a1 }
+K:main = seq { steps: [C:c0] }
+V:e1 = contract { target: K:main, invariant: my_pred(C:c0, C:c0) }
+entry: K:main
+"#;
+    let ast = parse_ok(input);
+    assert_eq!(ast.contracts.len(), 1);
+    let clause = &ast.contracts[0].clauses[0];
+    match clause {
+        ContractClause::Invariant { formula } => {
+            match formula {
+                Formula::PredicateCall { name, args } => {
+                    assert_eq!(name, "my_pred");
+                    assert_eq!(args.len(), 2);
+                }
+                other => panic!("expected PredicateCall, got {:?}", other),
+            }
+        }
+        other => panic!("expected Invariant clause, got {:?}", other),
+    }
+}
+
+#[test]
+fn formula_empty_set() {
+    let input = r#"
+T:a1 = integer { bits: 64, signed: false }
+C:c0 = const { value: 0, type: T:a1 }
+K:main = seq { steps: [C:c0] }
+V:e1 = contract { target: K:main, invariant: some_func(C:c0) == {} }
+entry: K:main
+"#;
+    let ast = parse_ok(input);
+    assert_eq!(ast.contracts.len(), 1);
+    let clause = &ast.contracts[0].clauses[0];
+    match clause {
+        ContractClause::Invariant { formula } => {
+            match formula {
+                Formula::Comparison { left, op, right } => {
+                    match left {
+                        Expr::PredicateCall { name, args } => {
+                            assert_eq!(name, "some_func");
+                            assert_eq!(args.len(), 1);
+                        }
+                        other => panic!("expected PredicateCall on left, got {:?}", other),
+                    }
+                    assert!(matches!(op, CmpOp::Eq));
+                    assert!(matches!(right, Expr::EmptySet));
+                }
+                other => panic!("expected Comparison, got {:?}", other),
+            }
+        }
+        other => panic!("expected Invariant clause, got {:?}", other),
+    }
+}

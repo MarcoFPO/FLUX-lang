@@ -594,6 +594,11 @@ fn collect_formula_refs<'a>(source: &'a str, formula: &'a Formula, out: &mut Vec
                 });
             }
         }
+        Formula::PredicateCall { args, .. } => {
+            for arg in args {
+                collect_formula_refs(source, arg, out);
+            }
+        }
     }
 }
 
@@ -611,11 +616,17 @@ fn collect_expr_refs<'a>(source: &'a str, expr: &'a Expr, out: &mut Vec<Ref<'a>>
             collect_expr_refs(source, left, out);
             collect_expr_refs(source, right, out);
         }
+        Expr::PredicateCall { args, .. } => {
+            for arg in args {
+                collect_expr_refs(source, arg, out);
+            }
+        }
         Expr::IntLit { .. }
         | Expr::FloatLit { .. }
         | Expr::Ident { .. }
         | Expr::Result
-        | Expr::State => {}
+        | Expr::State
+        | Expr::EmptySet => {}
     }
 }
 
