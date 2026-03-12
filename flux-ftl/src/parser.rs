@@ -45,8 +45,7 @@ fn parse_program(pairs: pest::iterators::Pairs<Rule>) -> Result<Program, ParseEr
                                 Rule::effect_def => effects.push(parse_effect_def(stmt)?),
                                 Rule::control_def => controls.push(parse_control_def(stmt)?),
                                 Rule::contract_def => {
-                                    let mut defs = parse_contract_def(stmt)?;
-                                    contracts.append(&mut defs);
+                                    contracts.push(parse_contract_def(stmt)?);
                                 }
                                 Rule::memory_def => memories.push(parse_memory_def(stmt)?),
                                 Rule::extern_def => externs.push(parse_extern_def(stmt)?),
@@ -725,7 +724,7 @@ fn parse_control_body(pair: pest::iterators::Pair<Rule>) -> Result<ControlOp, Pa
 
 fn parse_contract_def(
     pair: pest::iterators::Pair<Rule>,
-) -> Result<Vec<ContractDef>, ParseError> {
+) -> Result<ContractDef, ParseError> {
     let mut inner = pair.into_inner();
     let id = NodeRef::new(inner.next().unwrap().as_str());
     let target = NodeRef::new(inner.next().unwrap().as_str());
@@ -740,10 +739,6 @@ fn parse_contract_def(
         }
         let clause_str = clause_pair.as_str();
         let mut clause_inner = clause_pair.into_inner();
-        // The contract_clause rule contains inline keywords like "pre", "post", etc.
-        // pest doesn't expose the keyword directly - we need to check what's inside.
-        // The first inner element is either a formula or a trust_level.
-        // We detect the clause type by looking at the raw text prefix.
         if clause_str.starts_with("trust") {
             let trust_pair = clause_inner.next().unwrap();
             trust = Some(match trust_pair.as_str() {
@@ -766,25 +761,19 @@ fn parse_contract_def(
         }
     }
 
-    // Create one ContractDef per formula clause
+    // If no formula clauses exist (trust-only), add a dummy assume: true
     if formula_clauses.is_empty() {
-        // If only trust, create a dummy assume: true
         formula_clauses.push(ContractClause::Assume {
             formula: Formula::BoolLit { value: true },
         });
     }
 
-    let results: Vec<ContractDef> = formula_clauses
-        .into_iter()
-        .map(|clause| ContractDef {
-            id: id.clone(),
-            target: target.clone(),
-            clause,
-            trust: trust.clone(),
-        })
-        .collect();
-
-    Ok(results)
+    Ok(ContractDef {
+        id,
+        target,
+        clauses: formula_clauses,
+        trust,
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -86,6 +86,10 @@ C:c_samples_die = const { value: 2048, type: T:a10 }
 // Score increment
 C:c_score_inc = const { value: 10, type: T:a10 }
 
+// Typed zero constants for specific element types
+C:c_zero_u8 = const { value: 0, type: T:a16 }
+C:c_zero_i16 = const { value: 0, type: T:a14 }
+
 // ioctl constants for terminal raw mode
 C:c_tcgets = const { value: 21505, type: T:a13 }
 C:c_tcsets = const { value: 21506, type: T:a13 }
@@ -117,13 +121,13 @@ M:g4 = store { target: M:g3, index: C:c_zero, value: C:c_init_pos }
 M:g5 = load { source: M:g3, index: C:c_zero, type: T:a3 }
 
 // Framebuffer write (render output)
-M:g6 = store { target: M:g1, index: C:c_zero, value: C:c_zero }
+M:g6 = store { target: M:g1, index: C:c_zero, value: C:c_zero_u8 }
 
 // Framebuffer read (for syscall_write)
 M:g7 = load { source: M:g1, index: C:c_zero, type: T:a16 }
 
 // PCM buffer write (sound samples)
-M:g8 = store { target: M:g2, index: C:c_zero, value: C:c_zero }
+M:g8 = store { target: M:g2, index: C:c_zero, value: C:c_zero_i16 }
 
 // PCM buffer read (for pcm_write)
 M:g9 = load { source: M:g2, index: C:c_zero, type: T:a14 }
@@ -215,7 +219,7 @@ C:c_grow = add { inputs: [M:g5, C:c_one], type: T:a10 }
 
 // Generate eat sound via Bhaskara sine approximation
 C:c_angle_eat = mul { inputs: [C:c_freq_eat, C:c_samples_eat], type: T:a10 }
-C:c_sin_eat = bhaskara_approx { inputs: [C:c_angle_eat], type: T:a17 }
+C:c_sin_eat = bhaskara_approx { inputs: [C:c_angle_eat], type: T:a14 }
 
 // Fill PCM buffer with sine samples
 M:g8_eat = store { target: M:g2, index: C:c_zero, value: C:c_sin_eat }
@@ -237,7 +241,7 @@ C:c_set_dead = const { value: 0, type: T:a12 }
 
 // Generate death sound
 C:c_angle_die = mul { inputs: [C:c_freq_die, C:c_samples_die], type: T:a10 }
-C:c_sin_die = bhaskara_approx { inputs: [C:c_angle_die], type: T:a17 }
+C:c_sin_die = bhaskara_approx { inputs: [C:c_angle_die], type: T:a14 }
 M:g8_die = store { target: M:g2, index: C:c_zero, value: C:c_sin_die }
 
 K:f_die_sound = seq { steps: [M:g8_die, E:d_pcm_die] }

@@ -319,7 +319,7 @@ pub enum ControlOp {
 pub struct ContractDef {
     pub id: NodeRef,
     pub target: NodeRef,
-    pub clause: ContractClause,
+    pub clauses: Vec<ContractClause>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust: Option<TrustLevel>,
 }

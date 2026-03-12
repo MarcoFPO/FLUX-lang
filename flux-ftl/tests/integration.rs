@@ -71,7 +71,7 @@ fn parse_snake_game() {
 
     assert_eq!(ast.types.len(), 14);
     assert_eq!(ast.regions.len(), 4);
-    assert_eq!(ast.computes.len(), 46);
+    assert_eq!(ast.computes.len(), 48);
     assert_eq!(ast.effects.len(), 14);
     assert_eq!(ast.controls.len(), 25);
     assert_eq!(ast.contracts.len(), 10);
@@ -106,16 +106,8 @@ fn parse_ffi() {
     assert_eq!(ast.computes.len(), 10);
     assert_eq!(ast.effects.len(), 10);
     assert_eq!(ast.controls.len(), 11);
-    // ffi.ftl has 7 V-nodes, but some have multiple clauses (trust + assume + post)
-    // V:e1 has trust + assume + post = 2 ContractDefs (assume, post)
-    // V:e2 has trust + assume + post = 2
-    // V:e3 has trust + assume + post = 2
-    // V:e4 has trust + assume + post = 2
-    // V:e5 has trust + assume + post = 2
-    // V:e6 has pre = 1
-    // V:e7 has pre = 1
-    // Total = 12
-    assert_eq!(ast.contracts.len(), 12);
+    // ffi.ftl has 7 V-nodes, each producing one ContractDef with multiple clauses
+    assert_eq!(ast.contracts.len(), 7);
     assert_eq!(ast.memories.len(), 0);
     assert_eq!(ast.externs.len(), 6);
     assert_eq!(ast.entry.as_str(), "K:f_main");
@@ -875,7 +867,7 @@ entry: K:main
     let v = &ast.contracts[0];
     assert_eq!(v.id.as_str(), "V:e1");
     assert_eq!(v.target.as_str(), "E:d1");
-    assert!(matches!(v.clause, ContractClause::Pre { .. }));
+    assert!(matches!(v.clauses[0], ContractClause::Pre { .. }));
     assert!(v.trust.is_none());
 }
 
@@ -889,12 +881,12 @@ V:e1 = contract { target: E:d1, trust: EXTERN, assume: true, post: result != 0 }
 entry: K:main
 "#;
     let ast = parse_ok(input);
-    // trust + assume + post => 2 ContractDefs (assume, post), both with trust: EXTERN
-    assert_eq!(ast.contracts.len(), 2);
+    // trust + assume + post => 1 ContractDef with 2 clauses (assume, post), trust: EXTERN
+    assert_eq!(ast.contracts.len(), 1);
     assert!(matches!(ast.contracts[0].trust.as_ref().unwrap(), TrustLevel::Extern));
-    assert!(matches!(ast.contracts[0].clause, ContractClause::Assume { .. }));
-    assert!(matches!(ast.contracts[1].clause, ContractClause::Post { .. }));
-    assert!(matches!(ast.contracts[1].trust.as_ref().unwrap(), TrustLevel::Extern));
+    assert_eq!(ast.contracts[0].clauses.len(), 2);
+    assert!(matches!(ast.contracts[0].clauses[0], ContractClause::Assume { .. }));
+    assert!(matches!(ast.contracts[0].clauses[1], ContractClause::Post { .. }));
 }
 
 // ===========================================================================
@@ -1026,7 +1018,7 @@ V:e1 = contract { target: E:d1, pre: C:c1.val == 1 }
 entry: K:main
 "#;
     let ast = parse_ok(input);
-    match &ast.contracts[0].clause {
+    match &ast.contracts[0].clauses[0] {
         ContractClause::Pre { formula } => match formula {
             Formula::Comparison { left, op, right } => {
                 assert!(matches!(op, CmpOp::Eq));
@@ -1058,7 +1050,7 @@ V:e1 = contract { target: E:d1, pre: C:c1.val > 0 AND C:c2.val < 100 }
 entry: K:main
 "#;
     let ast = parse_ok(input);
-    match &ast.contracts[0].clause {
+    match &ast.contracts[0].clauses[0] {
         ContractClause::Pre { formula } => {
             assert!(matches!(formula, Formula::And { .. }));
             if let Formula::And { left, right } = formula {
@@ -1086,7 +1078,7 @@ V:e1 = contract { target: E:d1, post: result >= 0 OR result == -1 }
 entry: K:main
 "#;
     let ast = parse_ok(input);
-    match &ast.contracts[0].clause {
+    match &ast.contracts[0].clauses[0] {
         ContractClause::Post { formula } => {
             assert!(matches!(formula, Formula::Or { .. }));
         }
@@ -1106,7 +1098,7 @@ V:e1 = contract { target: K:f1, invariant: forall i in 0..C:c1.val: C:c2.arr[i] 
 entry: K:main
 "#;
     let ast = parse_ok(input);
-    match &ast.contracts[0].clause {
+    match &ast.contracts[0].clauses[0] {
         ContractClause::Invariant { formula } => {
             assert!(matches!(formula, Formula::Forall { .. }));
             if let Formula::Forall { var, range_start, .. } = formula {
@@ -1128,7 +1120,7 @@ V:e1 = contract { target: E:d1, post: (result >= 0 AND result < 100) OR result =
 entry: K:main
 "#;
     let ast = parse_ok(input);
-    match &ast.contracts[0].clause {
+    match &ast.contracts[0].clauses[0] {
         ContractClause::Post { formula } => {
             // The top level is OR: (... AND ...) OR (result == -1)
             assert!(matches!(formula, Formula::Or { .. }));
@@ -1147,7 +1139,7 @@ V:e1 = contract { target: E:d1, post: result == C:c1.val * 2 + 1 }
 entry: K:main
 "#;
     let ast = parse_ok(input);
-    match &ast.contracts[0].clause {
+    match &ast.contracts[0].clauses[0] {
         ContractClause::Post { formula } => {
             assert!(matches!(formula, Formula::Comparison { .. }));
             if let Formula::Comparison { left, op, right } = formula {
@@ -1177,7 +1169,7 @@ V:e1 = contract { target: E:d1, pre: NOT C:c1.val == true }
 entry: K:main
 "#;
     let ast = parse_ok(input);
-    match &ast.contracts[0].clause {
+    match &ast.contracts[0].clauses[0] {
         ContractClause::Pre { formula } => {
             // NOT (C:c1.val == true)
             assert!(matches!(formula, Formula::Not { .. }));
@@ -1210,7 +1202,7 @@ entry: K:main
             op_str
         );
         let ast = parse_ok(&input);
-        match &ast.contracts[0].clause {
+        match &ast.contracts[0].clauses[0] {
             ContractClause::Pre { formula } => {
                 assert!(
                     matches!(formula, Formula::Comparison { .. }),
@@ -1233,7 +1225,7 @@ V:e1 = contract { target: E:d1, post: result > 0 }
 entry: K:main
 "#;
     let ast = parse_ok(input);
-    match &ast.contracts[0].clause {
+    match &ast.contracts[0].clauses[0] {
         ContractClause::Post { formula } => {
             if let Formula::Comparison { left, .. } = formula {
                 assert!(matches!(left, Expr::Result));
@@ -1255,7 +1247,7 @@ V:e1 = contract { target: K:f1, invariant: state.length <= 800 }
 entry: K:main
 "#;
     let ast = parse_ok(input);
-    match &ast.contracts[0].clause {
+    match &ast.contracts[0].clauses[0] {
         ContractClause::Invariant { formula } => {
             assert!(matches!(formula, Formula::Comparison { .. }));
             if let Formula::Comparison { left, op, right } = formula {
@@ -1283,7 +1275,7 @@ V:e1 = contract { target: E:d1, assume: true }
 entry: K:main
 "#;
     let ast = parse_ok(input);
-    match &ast.contracts[0].clause {
+    match &ast.contracts[0].clauses[0] {
         ContractClause::Assume { formula } => {
             assert!(matches!(formula, Formula::BoolLit { value: true }));
         }
@@ -1301,7 +1293,7 @@ V:e1 = contract { target: E:d1, post: result.size <= 16384 }
 entry: K:main
 "#;
     let ast = parse_ok(input);
-    match &ast.contracts[0].clause {
+    match &ast.contracts[0].clauses[0] {
         ContractClause::Post { formula } => {
             assert!(matches!(formula, Formula::Comparison { .. }));
             if let Formula::Comparison { left, .. } = formula {
