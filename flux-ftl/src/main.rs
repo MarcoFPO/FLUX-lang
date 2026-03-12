@@ -7,6 +7,7 @@ use flux_ftl::error::Status;
 use flux_ftl::validator::validate;
 use flux_ftl::type_checker::check_types_and_effects;
 use flux_ftl::region_checker::check_regions;
+use flux_ftl::prover::{prove_contracts, ProofResult, ProofStatus, ProverConfig};
 
 #[derive(Debug, Serialize)]
 struct FullResult {
@@ -17,6 +18,8 @@ struct FullResult {
     parse_errors: Vec<flux_ftl::error::ParseError>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     validation_errors: Vec<GenericError>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    proof_results: Vec<ProofResult>,
 }
 
 #[derive(Debug, Serialize)]
@@ -25,6 +28,7 @@ enum FullStatus {
     Ok,
     ParseError,
     ValidationFail,
+    ProofFail,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,6 +55,7 @@ fn main() {
                 ast: None,
                 parse_errors: parse_result.errors,
                 validation_errors: Vec::new(),
+                proof_results: Vec::new(),
             };
             println!("{}", serde_json::to_string(&out).unwrap());
             return;
@@ -104,11 +109,30 @@ fn main() {
 
     let has_fatal = validation_errors.iter().any(|e| e.error_code < 2000 || e.error_code >= 3000);
 
+    // Phase 4: Contract proving (only if no fatal validation errors)
+    let proof_results = if !has_fatal {
+        let config = ProverConfig::default();
+        prove_contracts(&ast, &config)
+    } else {
+        Vec::new()
+    };
+
+    let has_disproven = proof_results.iter().any(|r| r.status == ProofStatus::Disproven);
+
+    let status = if has_fatal {
+        FullStatus::ValidationFail
+    } else if has_disproven {
+        FullStatus::ProofFail
+    } else {
+        FullStatus::Ok
+    };
+
     let out = FullResult {
-        status: if has_fatal { FullStatus::ValidationFail } else { FullStatus::Ok },
+        status,
         ast: Some(ast),
         parse_errors: Vec::new(),
         validation_errors,
+        proof_results,
     };
 
     println!("{}", serde_json::to_string(&out).unwrap());
