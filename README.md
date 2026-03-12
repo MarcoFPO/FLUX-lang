@@ -68,6 +68,8 @@ Entfernt: D-Node (Debug), H-Node (Hints), P-Node (Module), F-Node (Fehlerbehandl
 
 **Wachsende Wissensbasis:** Jedes akzeptierte Binary erweitert ein Graph Repository. Neuartigkeits-Metriken verhindern Stagnation. Das System wird ueber Zeit kreativer.
 
+**Biologisches Mutations-Modell:** Kreativitaet folgt dem Prinzip der zellulaeren Mutation — neutrale Varianten werden TOLERIERT (nicht sofort eliminiert), akkumulieren ueber Generationen, und erzeugen durch Emergenz qualitativ neue Algorithmen. V-Nodes sind das perfekte Immunsystem: Korrektheit ist unfehlbar, Kreativitaet ist frei.
+
 ## Dokumentation
 
 - **[FLUX v3 Spezifikation](docs/FLUX-v3-SPEC.md)** — Aktuelle Spezifikation (radikal reduziert)

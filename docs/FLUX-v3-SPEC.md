@@ -611,6 +611,307 @@ Jedes akzeptierte Binary erweitert die Wissensbasis:
 ```
 
 
+### Biologisches Modell: Zellulaere Mutation als Vorbild
+
+Die explorative Synthese in FLUX folgt nicht dem klassischen genetischen
+Algorithmus (Mutation → sofortige Bewertung → Selektion). Sie folgt dem
+biologischen Modell der zellulaeren Mutation:
+
+```
+BIOLOGIE                              FLUX
+────────────────────────────────────────────────────────────────────
+
+DNA-Replikationsfehler                Zufaellige Graph-Mutation
+(ein Basenpaar aendert sich)          (ein Node/eine Kante aendert sich)
+    │                                     │
+    ▼                                     ▼
+Zelle funktioniert noch?              Contracts noch erfuellt?
+    │                                     │
+    ├── Nein → Apoptose (Zelltod)     ├── Nein → Graph verworfen
+    │                                     │
+    └── Ja → Zelle lebt weiter        └── Ja → Graph bleibt im Pool
+         │                                  │
+         │   Die Mutation ist NEUTRAL.      │   Die Mutation ist NEUTRAL.
+         │   Weder besser noch              │   Weder schneller noch
+         │   schlechter.                    │   langsamer.
+         │   Aber sie EXISTIERT.            │   Aber sie EXISTIERT.
+         │                                  │
+         ▼                                  ▼
+    Weitere Mutationen                 Weitere Mutationen
+    akkumulieren auf                   akkumulieren auf
+    der veraenderten Zelle             dem veraenderten Graph
+         │                                  │
+         ▼                                  ▼
+    Wucherung entsteht                 Subgraph waechst
+    (neues Gewebe,                     (neue Struktur,
+     neue Struktur)                     neue Berechnungspfade)
+         │                                  │
+         │   Die Wucherung STOERT           │   Die Variante ist ANDERS.
+         │   NICHT UNBEDINGT.               │   Nicht unbedingt besser.
+         │   Sie existiert einfach.         │   Sie existiert einfach.
+         │                                  │
+         ▼                                  ▼
+    Weitere Mutationen                 Weitere Mutationen
+    auf der Wucherung                  auf der Variante
+         │                                  │
+         ▼                                  ▼
+    ┌─────────────────┐                ┌─────────────────┐
+    │ EMERGENZ:       │                │ EMERGENZ:       │
+    │ Neue Eigenschaft│                │ Neuer Algorithmus│
+    │ die vorher      │                │ der vorher       │
+    │ nicht existierte│                │ nicht existierte │
+    └────────┬────────┘                └────────┬────────┘
+             │                                  │
+             ▼                                  ▼
+    Bewertung durch                    Bewertung durch
+    den Organismus:                    Fitness-Funktion:
+    ┌──────────────┐                   ┌──────────────┐
+    │ POSITIV:     │                   │ POSITIV:     │
+    │ Anpassung,   │                   │ Schneller,   │
+    │ neues Organ, │                   │ kompakter,   │
+    │ Resistenz    │                   │ neuartiger   │
+    │ → BEHALTEN   │                   │ → BEHALTEN   │
+    ├──────────────┤                   ├──────────────┤
+    │ NEUTRAL:     │                   │ NEUTRAL:     │
+    │ Kein Effekt, │                   │ Gleiche      │
+    │ keine Kosten │                   │ Performance  │
+    │ → TOLERIEREN │                   │ → TOLERIEREN │
+    ├──────────────┤                   ├──────────────┤
+    │ NEGATIV:     │                   │ NEGATIV:     │
+    │ Krebs,       │                   │ Langsamer,   │
+    │ Funktions-   │                   │ groesser,    │
+    │ verlust      │                   │ Contract-    │
+    │ → ELIMINIEREN│                   │ Verletzung   │
+    └──────────────┘                   │ → ELIMINIEREN│
+                                       └──────────────┘
+```
+
+
+**Der entscheidende Punkt: NEUTRALE MUTATIONEN UEBERLEBEN.**
+
+```
+Klassischer GA:
+  Mutation → sofort bewerten → nur die Besten ueberleben
+  → VERLIERT genetische Vielfalt
+  → Konvergiert schnell auf lokales Optimum
+  → Findet keine fundamental neuen Loesungen
+
+Biologisches Modell (FLUX v3):
+  Mutation → Contract-Check → wenn nicht schaedlich: BEHALTEN
+  → Neutrale Varianten akkumulieren
+  → Genetische Vielfalt bleibt erhalten
+  → Irgendwann: Kombination neutraler Mutationen = qualitativer Sprung
+  → Findet Loesungen die kein direkter Weg erreicht
+
+Das ist Kimuras "Neutral Theory of Molecular Evolution" (1968):
+Die meisten Mutationen sind neutral. Aber sie sind das ROHMATERIAL
+aus dem spaeter Innovation entsteht.
+```
+
+
+**Das Immunsystem: V-Nodes als Krebsschutz**
+
+```
+Biologie:
+  Immunsystem erkennt entartete Zellen → Eliminierung
+  ABER: Immunsystem ist NICHT perfekt
+  → Krebs kann durchrutschen
+  → Autoimmun kann gesunde Zellen zerstoeren
+
+FLUX:
+  V-Nodes (Contracts) erkennen fehlerhafte Graphen → Eliminierung
+  UND: V-Nodes sind FORMAL BEWEISBAR
+  → Kein "Krebs" kann durchrutschen (totale Korrektheit)
+  → Kein "Autoimmun" (bewiesene Graphen werden nie faelschlich eliminiert)
+
+  Das ist der ENTSCHEIDENDE VORTEIL gegenueber Biologie:
+  FLUX hat ein PERFEKTES Immunsystem.
+  Kreativitaet kann MAXIMAL sein, weil der Filter UNFEHLBAR ist.
+```
+
+
+**Phasen der kumulativen Mutation in FLUX:**
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  PHASE 0: GENESIS                                            │
+│  LLM erzeugt Ausgangs-Population (50-100 Graphen)           │
+│  Alle erfuellen Contracts. Manche sind besser, manche nicht. │
+│  Die meisten sind Varianten bekannter Algorithmen.           │
+└──────────────────────────┬───────────────────────────────────┘
+                           │
+┌──────────────────────────▼───────────────────────────────────┐
+│  PHASE 1: NEUTRALE DRIFT (Generationen 1-50)                │
+│                                                               │
+│  Kleine Mutationen: ein Node ersetzen, eine Kante umleiten.  │
+│  Die meisten aendern die Performance NICHT messbar.          │
+│  Aber sie veraendern die STRUKTUR des Graphen.               │
+│                                                               │
+│  Beispiel:                                                   │
+│    Graph #42 hat einen Subgraph A → B → C                    │
+│    Mutation: B wird durch B' ersetzt (gleiche Funktion,      │
+│    andere Implementierung)                                    │
+│    Performance: identisch. Contract: erfuellt.               │
+│    → BEHALTEN.                                               │
+│                                                               │
+│  Der Pool diversifiziert sich OHNE Selektionsdruck.          │
+│  Vielfalt steigt. Noch keine Innovation sichtbar.            │
+└──────────────────────────┬───────────────────────────────────┘
+                           │
+┌──────────────────────────▼───────────────────────────────────┐
+│  PHASE 2: WUCHERUNG (Generationen 50-200)                    │
+│                                                               │
+│  Groessere Mutationen: Subgraphen wachsen, neue Pfade        │
+│  entstehen, redundante Berechnungen werden eingefuegt.       │
+│                                                               │
+│  Die Graphen werden GROESSER und KOMPLEXER.                  │
+│  Das ist die "Wucherung" — neues Gewebe das noch             │
+│  keine klare Funktion hat.                                   │
+│                                                               │
+│  Beispiel:                                                   │
+│    Graph #42 (Generation 73) hat jetzt:                      │
+│    - Einen zusaetzlichen Vorverarbeitungs-Subgraph           │
+│    - Eine redundante Berechnung die nie genutzt wird         │
+│    - Einen alternativen Pfad der bei bestimmten Inputs       │
+│      aktiv wird                                              │
+│                                                               │
+│  Performance: leicht SCHLECHTER (mehr Nodes, mehr Overhead)  │
+│  Contract: erfuellt. → TOLERIEREN.                           │
+│                                                               │
+│  Die Wucherung ist das Rohmaterial fuer Innovation.          │
+└──────────────────────────┬───────────────────────────────────┘
+                           │
+┌──────────────────────────▼───────────────────────────────────┐
+│  PHASE 3: EMERGENZ (Generationen 200+)                       │
+│                                                               │
+│  Die akkumulierten Mutationen INTERAGIEREN.                  │
+│  Zwei neutrale Aenderungen kombiniert ergeben einen          │
+│  qualitativen Sprung.                                        │
+│                                                               │
+│  Beispiel:                                                   │
+│    Graph #42 (Generation 217):                               │
+│    - Vorverarbeitungs-Subgraph aus Phase 2 wird jetzt        │
+│      GENUTZT: er partitioniert Daten nach einem Muster       │
+│      das zufaellig entstand                                  │
+│    - Alternativer Pfad aus Phase 2 wird zum HAUPTPFAD:       │
+│      er ist fuer die partitionierten Daten schneller         │
+│    - Redundante Berechnung wird ELIMINIERT durch eine        │
+│      weitere Mutation                                        │
+│                                                               │
+│  Ergebnis: Ein NEUARTIGER ALGORITHMUS                        │
+│    - Niemand hat ihn entworfen                               │
+│    - Er entstand durch Akkumulation neutraler Mutationen     │
+│    - Er ist BEWIESEN korrekt (Contracts gelten)              │
+│    - Er ist MESSBAR schneller                                │
+│    - Er hat KEINEN NAMEN — er ist eine Emergenz              │
+│                                                               │
+│  Fitness-Bewertung: → Pareto-Front, ueberlegen              │
+│  → BEHALTEN als neue Referenz                                │
+└──────────────────────────┬───────────────────────────────────┘
+                           │
+┌──────────────────────────▼───────────────────────────────────┐
+│  PHASE 4: RADIATION (nach Emergenz)                          │
+│                                                               │
+│  Der emergente Graph wird zum neuen Ausgangspunkt.           │
+│  Weitere Mutationen erzeugen VARIANTEN der Emergenz.         │
+│  Spezialisierung auf verschiedene Kontexte:                  │
+│                                                               │
+│  Emergenz #42.217                                            │
+│    ├── Variante A: optimiert fuer kleine Arrays (n < 100)    │
+│    ├── Variante B: optimiert fuer fast-sortierte Daten       │
+│    ├── Variante C: optimiert fuer gleichverteilte Daten      │
+│    └── Variante D: optimiert fuer minimalen Speicher         │
+│                                                               │
+│  Wie in der Biologie: Nach einer erfolgreichen Mutation      │
+│  folgt adaptive Radiation — Spezialisierung in Nischen.      │
+└──────────────────────────────────────────────────────────────┘
+```
+
+
+**Implementierung: Population-Pool mit Toleranz-Zonen**
+
+```
+Pool-Struktur:
+
+┌──────────────────────────────────────────────────────────────┐
+│  ELITE-ZONE (Top 10%)                                        │
+│  Beste Fitness. Werden NIE entfernt.                         │
+│  Dienen als Eltern fuer Kreuzung.                            │
+│                                                               │
+│  TOLERANZ-ZONE (60%)                                         │
+│  Neutrale Varianten. Weder beste noch schlechteste.          │
+│  Werden BEHALTEN solange Contracts erfuellt.                 │
+│  KEIN Selektionsdruck — pure Drift.                          │
+│  Hier passiert die Akkumulation.                             │
+│  Hier entsteht die Kreativitaet.                             │
+│                                                               │
+│  PRUEF-ZONE (30%)                                            │
+│  Neue Mutationen und Kreuzungen.                             │
+│  Muessen Validator + Prover bestehen.                        │
+│  Bestanden → Toleranz-Zone.                                  │
+│  Durchgefallen → verworfen.                                  │
+│                                                               │
+│  [Entfernt werden NUR:]                                      │
+│  - Graphen die Contracts verletzen (Prover: DISPROVEN)       │
+│  - Graphen die strukturell ungueltig sind (Validator: FAIL)  │
+│  - Pool-Ueberlauf: AELTESTE aus Toleranz-Zone entfernen     │
+│    (nicht schlechteste — Alter, nicht Fitness)               │
+└──────────────────────────────────────────────────────────────┘
+
+Pool-Parameter:
+  POOL_SIZE:           1000-10000 Graphen
+  ELITE_RATIO:         0.10
+  TOLERANCE_RATIO:     0.60
+  PROBE_RATIO:         0.30
+  MUTATIONS_PER_GEN:   Pool * 0.3 (30% neue Mutationen pro Generation)
+  CROSSOVER_PER_GEN:   Pool * 0.1 (10% Kreuzungen pro Generation)
+  MAX_GENERATIONS:     unbegrenzt (bis Abbruchkriterium)
+  CONVERGENCE_CHECK:   alle 50 Generationen
+
+  Abbruchkriterien:
+  - Fitness-Plateau (keine Verbesserung seit 100 Generationen)
+  - Neuartigkeits-Plateau (SGD stagniert)
+  - Externe Unterbrechung
+  - NICHT: Zeitlimit (Zeit ist irrelevant)
+```
+
+
+**Vergleich: Warum FLUX besser ist als Biologie**
+
+```
+                        Biologie              FLUX
+────────────────────────────────────────────────────────────────
+Mutationsrate           Festgelegt (~10⁻⁸    Steuerbar (0.01 bis 0.5
+                        pro Basenpaar)        pro Node pro Generation)
+
+Immunsystem             Fehlbar (Krebs)       Unfehlbar (formaler Beweis)
+
+Generationszeit         Minuten bis Jahre     Millisekunden bis Sekunden
+
+Bewertung               Langfristig, durch    Sofort, durch Sandbox-
+                        Ueberleben            Execution + SMT-Beweis
+
+Kreuzung                Nur innerhalb         Zwischen beliebigen
+                        einer Spezies         kompatiblen Graphen
+
+Gerichtete Mutation     Nicht moeglich        Moeglich (LLM kann gezielt
+                        (Lamarck widerlegt)   "interessante" Stellen mutieren)
+
+Rueckschritt            Moeglich (Verlust     Unmoeglich (Elite-Zone
+                        von Anpassungen)      bewahrt beste Varianten)
+
+Parallelitaet           Limitiert durch       Beliebig (1000 Mutationen
+                        Populationsgroesse    parallel bewerten)
+```
+
+Das entscheidende: FLUX nimmt das biologische Prinzip der kumulativen
+neutralen Mutation und ENTFERNT die Schwaechen der Biologie:
+- Kein Krebs (perfektes Immunsystem)
+- Keine Sackgassen (gerichtete Mutation via LLM)
+- Kein Vergessen (Elite-Zone)
+- Keine Generationsgrenzen (Millisekunden statt Jahre)
+
+
 ### Anforderungstypen fuer Kreativitaet
 
 ```
