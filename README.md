@@ -104,3 +104,7 @@ ENTDECKE     "Finde Berechnung mit Eigenschaft X" → Offene Suche im Graphen-Ra
 ## Lizenz
 
 MIT
+
+## Danksagungen 
+Gerd für die Inspiration 
+Bea für das Logo
