@@ -13,6 +13,8 @@
    werden nicht benoetigt            keine defensive Programmierung
 4. Performance der Codegenerierung → Beliebig viele LLM-Iterationen,
    ist sekundaer                     beliebig tiefe Analyse
+5. Kreativitaet ist erwuenscht     → KI soll neuartige Loesungen ERFINDEN,
+                                     nicht nur bekannte Muster reproduzieren
 ```
 
 ## Architektur
@@ -58,11 +60,13 @@ Entfernt: D-Node (Debug), H-Node (Hints), P-Node (Module), F-Node (Fehlerbehandl
 
 **Totale Korrektheit:** Jedes Binary ist formal verifiziert. Null Runtime-Checks. Kein Overhead.
 
-**Keine Fehlerpolicies:** Fehler sind keine Sonderfaelle — sie sind normale Graph-Pfade, die denselben Korrektheitsbeweis durchlaufen wie der Hauptpfad.
+**Explorative Synthese:** KI erzeugt nicht einen Graph, sondern Hunderte. Korrektheit ist der Filter, Kreativitaet ist der Generator. Genetische Evolution auf Graph-Ebene findet Loesungen die kein Mensch erfinden wuerde.
 
 **Superoptimierung:** Compile-Zeit irrelevant → exhaustive Suche nach der kuerzesten / schnellsten Instruktionssequenz pro Plattform. Besser als handgeschriebener Assembler.
 
 **Content-Addressiert:** Keine Variablennamen. Identitaet = BLAKE3-Hash des Inhalts. Gleiche Berechnung = gleicher Hash = automatische Deduplizierung.
+
+**Wachsende Wissensbasis:** Jedes akzeptierte Binary erweitert ein Graph Repository. Neuartigkeits-Metriken verhindern Stagnation. Das System wird ueber Zeit kreativer.
 
 ## Dokumentation
 
@@ -78,6 +82,15 @@ Entfernt: D-Node (Debug), H-Node (Hints), P-Node (Module), F-Node (Fehlerbehandl
 - [`examples/snake-game.flux.json`](examples/snake-game.flux.json) — Snake Game (v2 JSON-Format)
 
 *Hinweis: v3 verwendet kein JSON mehr. Die Beispiele zeigen das v2-Format zur Veranschaulichung.*
+
+## Anforderungstypen
+
+```
+UEBERSETZE   "Sortiere mit Mergesort"         → Direkte Synthese (1 Graph)
+OPTIMIERE    "Sortiere moeglichst schnell"    → Pareto-Selektion (viele Varianten)
+ERFINDE      "Verbessere sort(), erfinde Neues"→ Explorative Synthese + Evolution
+ENTDECKE     "Finde Berechnung mit Eigenschaft X" → Offene Suche im Graphen-Raum
+```
 
 ## Vergleich v2 → v3
 
@@ -95,6 +108,9 @@ Debug-Support       Ja (D-Node + Trace)        Keiner
 Optimierung         LLVM -O3                   Superoptimizer
 Runtime-Checks      0-N pro Binary             EXAKT 0
 Korrektheitsgarantie Teilweise                 Total
+Kreativitaet        Keine                      Explorative Synthese
+Varianten           1 pro Anforderung          50-10000 Kandidaten
+Wissensbasis        Keine                      Wachsendes Graph Repository
 ```
 
 ## Lizenz

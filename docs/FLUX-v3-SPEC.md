@@ -10,6 +10,8 @@
                                            keine Abstraktion zur Verstaendlichkeit
 4. Performance der Codegenerierung       → Beliebig viele LLM-Iterationen,
    ist sekundaer                           beliebig tiefe Analyse
+5. Kreativitaet ist erwuenscht           → KI soll neuartige Loesungen ERFINDEN,
+                                           nicht nur bekannte Muster reproduzieren
 ```
 
 ## Was gegenueber v2 wegfaellt
@@ -264,23 +266,397 @@ LLVM -O3 (gut):                  Superoptimized (optimal):
 ```
 
 
-## 9. KI-Generierungspipeline v3
+## 9. Explorative Synthese — KI als Erfinder
+
+### Das Problem mit reiner Uebersetzung
+
+```
+Bisheriges Modell:
+  Anforderung → bekanntes Muster → Graph → Binary
+
+  "Sortiere ein Array"  → Mergesort → Graph → Binary
+
+  Die KI REPRODUZIERT. Sie erfindet nichts.
+  Das ist eine Schreibmaschine, kein Ingenieur.
+```
+
+### Das neue Modell: Korrektheit als Filter, Kreativitaet als Generator
+
+```
+Neues Modell:
+  Anforderung → VIELE Varianten erzeugen → filtern → bewerten → beste waehlen
+
+  "Sortiere ein Array"  → 200 verschiedene Graphen
+                         → 140 bestehen Validator
+                         → 89 sind bewiesen korrekt
+                         → Fitness-Bewertung
+                         → Variante #67: neuartiger Hybrid aus
+                           Radixsort + Insertionsort der fuer
+                           diese Datenverteilung 3x schneller ist
+                           als alles Bekannte
+
+  Die KI ERFINDET. Korrektheit ist der Sicherheitsgurt, nicht das Lenkrad.
+```
+
+### Architektur der Explorativen Synthese
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  PHASE 1: DIVERGENZ (viele Varianten erzeugen)               │
+│                                                               │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐             │
+│  │ LLM        │  │ Genetischer│  │ Constraint- │             │
+│  │ Varianten  │  │ Algorithmus│  │ Relaxation  │             │
+│  │            │  │ auf Graphen│  │             │             │
+│  │ "Erzeuge   │  │            │  │ "Lockere    │             │
+│  │  10 grund- │  │ Mutation:  │  │  Constraint │             │
+│  │  verschiedene│ │ Nodes      │  │  X und suche│             │
+│  │  Loesungen"│  │ ersetzen,  │  │  im groesse-│             │
+│  │            │  │ Kanten     │  │  ren Raum"  │             │
+│  │            │  │ umleiten,  │  │             │             │
+│  │            │  │ Subgraphen │  │             │             │
+│  │            │  │ kreuzen    │  │             │             │
+│  └─────┬──────┘  └─────┬──────┘  └──────┬──────┘            │
+│        │               │                │                    │
+│        └───────────────┼────────────────┘                    │
+│                        │                                     │
+│                        ▼                                     │
+│              Pool: N Kandidaten-Graphen                      │
+│              (N = 50..10000, Zeit irrelevant)                │
+└────────────────────────┬─────────────────────────────────────┘
+                         │
+┌────────────────────────▼─────────────────────────────────────┐
+│  PHASE 2: SELEKTION (harter Filter)                          │
+│                                                               │
+│  Validator:  Struktur + Typen + Effekte + Regionen           │
+│              → Ungueltige Graphen verwerfen                  │
+│                                                               │
+│  Contract Prover:  Alle V-Nodes muessen bewiesen werden      │
+│              → Unbeweisbare Graphen verwerfen                │
+│                                                               │
+│  Ergebnis: M korrekte Kandidaten (M <= N)                    │
+└────────────────────────┬─────────────────────────────────────┘
+                         │
+┌────────────────────────▼─────────────────────────────────────┐
+│  PHASE 3: BEWERTUNG (Fitness jenseits Korrektheit)           │
+│                                                               │
+│  Jeder korrekte Kandidat wird bewertet nach:                 │
+│                                                               │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │ Fitness-Dimensionen:                                 │    │
+│  │                                                      │    │
+│  │ Throughput       Instruktionen / Sekunde             │    │
+│  │                  (gemessen via Sandbox-Execution)     │    │
+│  │                                                      │    │
+│  │ Speicher         Peak Memory / Gesamtallokation      │    │
+│  │                  (statisch berechnet aus R-Nodes)     │    │
+│  │                                                      │    │
+│  │ Energie          Geschaetzte Instruktions-Energie     │    │
+│  │                  (gewichtet nach Op-Typ und Target)   │    │
+│  │                                                      │    │
+│  │ Latenz           Worst-Case Ausfuehrungszeit          │    │
+│  │                  (WCET-Analyse oder Messung)          │    │
+│  │                                                      │    │
+│  │ Graph-Groesse    Anzahl Nodes (weniger = besser)      │    │
+│  │                                                      │    │
+│  │ NEUARTIGKEIT     Distanz zu bekannten Loesungen      │    │
+│  │                  (Structural Graph Distance)          │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                                                               │
+│  Bewertung ist MEHRDIMENSIONAL — kein einzelner Score.       │
+│  Pareto-Front: Alle Kandidaten die in mindestens einer       │
+│  Dimension ungeschlagen sind, ueberleben.                    │
+└────────────────────────┬─────────────────────────────────────┘
+                         │
+┌────────────────────────▼─────────────────────────────────────┐
+│  PHASE 4: EVOLUTION (optional, bei "erfinde etwas Neues")    │
+│                                                               │
+│  Die besten Kandidaten aus Phase 3 werden:                   │
+│                                                               │
+│  1. MUTIERT:  Zufaellige Aenderungen an Nodes/Kanten         │
+│               (Op ersetzen, Subgraph umstrukturieren,        │
+│                Parallelismus einfuegen/entfernen)            │
+│                                                               │
+│  2. GEKREUZT: Subgraphen zwischen zwei korrekten             │
+│               Kandidaten austauschen                         │
+│                                                               │
+│  3. REINJIZIERT: LLM analysiert die beste Variante           │
+│               und erzeugt bewusst ABWEICHENDE Variationen    │
+│               ("Was waere wenn der innere Loop anders         │
+│                strukturiert waere?")                          │
+│                                                               │
+│  → Zurueck zu Phase 2 (Filter) → Phase 3 (Bewerten)         │
+│  → Wiederholen bis Konvergenz oder Abbruchkriterium          │
+│                                                               │
+│  Generationen: 10..1000 (Zeit irrelevant)                    │
+└────────────────────────┬─────────────────────────────────────┘
+                         │
+                         ▼
+                  Bester Kandidat → Superoptimizer → Binary
+```
+
+
+### Die drei Synthese-Strategien
+
+**Strategie 1: LLM-Divergenz (breit, schnell)**
+
+```
+Prompt an LLM:
+
+  "Erzeuge 10 grundverschiedene FLUX-Graphen fuer:
+   Sortiere ein Array von 64-bit Integers.
+
+   Variante 1: Vergleichsbasiert
+   Variante 2: Nicht-vergleichsbasiert
+   Variante 3: Adaptiv (fast-sortierte Daten)
+   Variante 4: Cache-optimiert (wenige Memory-Zugriffe)
+   Variante 5: Minimale Branches
+   Variante 6: Maximal parallel (SPAWN/JOIN)
+   Variante 7: Minimaler Speicher (in-place)
+   Variante 8: Hybride Strategie
+   Variante 9: Unkonventionell — brich eine Regel
+   Variante 10: Frei — ueberrasche"
+
+Ergebnis: 10 strukturell verschiedene Graphen,
+          die dasselbe Interface und dieselben Contracts erfuellen.
+```
+
+**Strategie 2: Genetische Graph-Evolution (tief, langsam)**
+
+```
+Population:
+  100 korrekte Graphen (aus LLM-Divergenz oder Mutation)
+
+Mutation-Operatoren auf Graph-Ebene:
+  ┌────────────────────────────────────────────────────────┐
+  │ NODE_REPLACE   Ersetze C-Node(ADD) durch C-Node(SUB)  │
+  │                + Kompensation (V-Node muss halten)     │
+  │                                                        │
+  │ EDGE_REWIRE    Verbinde Input eines Nodes mit einem    │
+  │                anderen Node gleichen Typs              │
+  │                                                        │
+  │ SUBGRAPH_SWAP  Tausche Subgraph A gegen Subgraph B    │
+  │                aus einem anderen Kandidaten            │
+  │                                                        │
+  │ LOOP_TRANSFORM Aendere Loop-Strategie:                 │
+  │                Iterativ ↔ Rekursiv ↔ Entrollt          │
+  │                ↔ Vektorisiert ↔ Parallel               │
+  │                                                        │
+  │ BRANCH_ELIM    Ersetze BRANCH durch branchless         │
+  │                Arithmetik (CMOV-Pattern)               │
+  │                                                        │
+  │ PAR_INSERT     Fuege Parallelismus ein wo              │
+  │                keine Datenabhaengigkeit besteht        │
+  │                                                        │
+  │ REGION_MERGE   Vereinige zwei Regionen                 │
+  │                (weniger alloc/free, groesserer Block)   │
+  │                                                        │
+  │ CONST_FOLD     Ersetze berechenbare Subgraphen         │
+  │                durch ihre Ergebnisse                   │
+  │                                                        │
+  │ NOVEL_INSERT   Fuege einen zufaelligen, typkorrekten   │
+  │                Subgraphen ein und pruefe ob             │
+  │                die Contracts noch gelten               │
+  └────────────────────────────────────────────────────────┘
+
+Selection:  NSGA-II (Multi-Objective)
+            Pareto-Front aus Throughput × Speicher × Neuartigkeit
+
+Generationen: bis Konvergenz (typisch 50-500)
+```
+
+**Strategie 3: Constraint-Relaxation (gezielt, explorativ)**
+
+```
+Ausgangslage:
+  "Verbessere die Bildkompression"
+
+  Bestehender Graph: DCT-basiert (wie JPEG)
+  Bestehende Contracts:
+    V1: output.size < input.size * ratio
+    V2: decompress(compress(input)) == input  (verlustfrei)
+
+Schritt 1: Relaxation
+  V2 aendern: decompress(compress(input)) ≈ input  (Distanz < epsilon)
+  → Groesserer Loesungsraum (verlustbehaftet erlaubt)
+
+Schritt 2: Exploration
+  LLM generiert Varianten im erweiterten Raum:
+  - Wavelet-basiert statt DCT
+  - Fraktale Kompression
+  - Neuronale Kompression (Lookup-Table aus Training)
+  - Hybrid: grobe DCT + feine Wavelet-Korrektur
+  - UNBEKANNT: etwas das kein Name hat
+
+Schritt 3: Re-Verifikation
+  Alle Varianten muessen die relaxierten Contracts erfuellen.
+  Zusaetzlich: empirische Qualitaetsmessung (SSIM, PSNR)
+
+Schritt 4: Pareto-Selektion
+  Kompressionsrate × Qualitaet × Geschwindigkeit
+  → Variante #4 (Hybrid) ist auf der Pareto-Front
+  → Variante #5 (UNBEKANNT) hat besten Qualitaets/Groessen-Tradeoff
+```
+
+
+### Neuartigkeits-Metrik
+
+Wie misst man ob eine Loesung "neu" ist?
+
+```
+Structural Graph Distance (SGD):
+
+  Gegeben: Graph G_neu und eine Datenbank bekannter Graphen {G_1, ..., G_k}
+
+  SGD(G_neu) = min_i( EditDistance(G_neu, G_i) )
+
+  EditDistance zaehlt:
+    - Nodes hinzugefuegt/entfernt
+    - Ops geaendert (ADD→MUL = 1 Edit)
+    - Kanten umgeleitet
+    - Subgraphen ersetzt
+
+  Hoher SGD = hohe Neuartigkeit = bevorzugt in Pareto-Selektion
+
+  Die Datenbank waechst mit jeder Synthese:
+  → Jedes akzeptierte Binary wird zum Referenzpunkt
+  → System wird ueber Zeit kreativer, weil es sich von
+     immer mehr bekannten Loesungen entfernen muss
+```
+
+
+### Konkretes Beispiel: "Verbessere sort()"
+
+```
+Anforderung:
+  "Verbessere die Sortierung von 64-bit Integer-Arrays.
+   Erfinde dafuer etwas Neues."
+
+Contracts (unverhandelbar):
+  V1: result ist aufsteigend sortiert
+  V2: result ist Permutation von input
+  V3: Terminierung fuer alle endlichen Inputs
+
+Phase 1 — Divergenz:
+  LLM erzeugt 50 Varianten + Genetischer Algo erzeugt 150 Mutationen
+  = 200 Kandidaten
+
+Phase 2 — Selektion:
+  187 bestehen Validator
+  134 sind bewiesen korrekt (V1, V2, V3 alle proven)
+  66 verworfen (nicht beweisbar oder inkorrekt)
+
+Phase 3 — Bewertung (Sandbox-Execution, 10M Elemente):
+
+  Kandidat   Typ                    Throughput   Speicher  SGD
+  ────────────────────────────────────────────────────────────
+  #012       Mergesort (Standard)   480 MB/s     O(n)      0.0
+  #023       Radixsort              890 MB/s     O(n)      3.2
+  #041       Introsort              510 MB/s     O(log n)  2.1
+  #067       ??? (KI-Erfindung)     1120 MB/s    O(√n)     8.7  ← NEU
+  #089       Parallel Mergesort     1450 MB/s    O(n)      4.1
+  #134       ??? (KI-Erfindung)     920 MB/s     O(1)      9.3  ← NEU
+
+  Pareto-Front: {#067, #089, #134}
+
+Phase 4 — Analyse von #067 (beste Neuartigkeit + Throughput):
+
+  Was hat die KI erfunden?
+
+  Graph-Struktur (automatisch rekonstruiert):
+  1. Grobe Partitionierung durch Radix auf die oberen 16 Bits
+     (256 Buckets, cache-line-aligned, branchless Verteilung)
+  2. Pro Bucket: Insertionsort wenn n < 32, sonst Bitonic Sort
+  3. Merge-Phase eliminiert: Buckets sind bereits geordnet
+     durch die Radix-Partitionierung
+  4. SIMD-Nutzung: 4-Element Sorting Networks via VMIN/VMAX
+     innerhalb der Insertionsort-Phase
+
+  Kein bekannter Algorithmus. Hybrid aus Radix + Bitonic + SIMD-Networks.
+  Bewiesen korrekt. 2.3x schneller als std::sort fuer gleichverteilte Daten.
+
+  Variante #067 → Superoptimizer → Binary
+```
+
+
+### Wachsende Wissensbasis
+
+```
+Jedes akzeptierte Binary erweitert die Wissensbasis:
+
+┌──────────────────────────────────────────────────────────────┐
+│  GRAPH REPOSITORY (Content-Addressiert)                      │
+│                                                               │
+│  Jeder Graph wird gespeichert mit:                           │
+│  - Content-Hash (Identitaet)                                 │
+│  - Bewiesene Contracts (was er garantiert)                   │
+│  - Fitness-Profil (Throughput, Speicher, Latenz, ...)        │
+│  - Neuartigkeits-Score zum Zeitpunkt der Erzeugung          │
+│  - Abstammung (aus welcher Mutation/Kreuzung entstanden)     │
+│                                                               │
+│  Nutzen:                                                     │
+│  - Subgraphen koennen in neuen Synthesen wiederverwendet     │
+│    werden (bewiesene Korrektheit bleibt erhalten)            │
+│  - Neuartigkeits-Metrik wird schaerfer (mehr Referenzpunkte) │
+│  - Genetische Kreuzung nutzt bewaehrte Subgraphen            │
+│  - KI lernt welche Strukturen in welchen Kontexten           │
+│    ueberlegen sind                                           │
+│                                                               │
+│  Wachstum:                                                   │
+│  Tag 1:     ~100 Referenz-Graphen (Standardalgorithmen)     │
+│  Monat 1:   ~5.000 (erste kreative Varianten)               │
+│  Jahr 1:    ~500.000 (eigenes Oekosystem)                   │
+│  Langfristig: Millionen — eigene "Algorithmische DNA"        │
+└──────────────────────────────────────────────────────────────┘
+```
+
+
+### Anforderungstypen fuer Kreativitaet
+
+```
+Typ 1: UEBERSETZE (keine Kreativitaet noetig)
+  "Sortiere ein Array mit Mergesort"
+  → Genau ein bekannter Algorithmus → direkte Synthese
+
+Typ 2: OPTIMIERE (gerichtete Kreativitaet)
+  "Sortiere ein Array moeglichst schnell"
+  → Viele bekannte + neue Varianten → Pareto-Selektion
+
+Typ 3: ERFINDE (maximale Kreativitaet)
+  "Verbessere die Sortierung. Erfinde etwas Neues."
+  → Volle explorative Synthese mit Neuartigkeits-Bonus
+  → Genetische Evolution ueber Generationen
+  → Constraint-Relaxation erlaubt
+
+Typ 4: ENTDECKE (offene Exploration)
+  "Finde eine Berechnung die Eigenschaft X hat."
+  → Nur Contracts definiert, kein Algorithmus vorgegeben
+  → Reine Suche im Graphen-Raum
+  → Kann fundamental neue Algorithmen hervorbringen
+```
+
+
+## 10. KI-Generierungspipeline v3 (erweitert)
 
 ```
 Anforderung
     │
+    ├── Typ 1/2: UEBERSETZE / OPTIMIERE
+    │   → Direkte Synthese (wenige Varianten)
+    │
+    └── Typ 3/4: ERFINDE / ENTDECKE
+        → Explorative Synthese (Sektion 9)
+    │
     ▼
-LLM erzeugt binaeren FLUX-Graph
-    │     (kein JSON — direkt strukturierte Binaer-Nodes
-    │      via Structured Output / Tool Calling)
+Kandidaten-Pool (1..10000 Graphen)
     │
     ▼
 ┌─────────────────────────────────────────────────┐
-│ VALIDATION LOOP (keine Iterations-Begrenzung)    │
+│ SELEKTION (keine Iterations-Begrenzung)          │
 │                                                  │
 │   Validator:  Struktur + Typen + Effekte         │
 │      │                                           │
-│      ├── FAIL → detailliertes Feedback ans LLM   │
+│      ├── FAIL → verwerfen ODER Feedback ans LLM  │
 │      │          LLM erzeugt korrigierten Graph   │
 │      │          → zurueck zum Validator          │
 │      │                                           │
@@ -288,50 +664,52 @@ LLM erzeugt binaeren FLUX-Graph
 │                                                  │
 │   Contract Prover (KEIN Timeout):                │
 │      │                                           │
-│      ├── DISPROVEN → Gegenbeispiel ans LLM       │
-│      │               LLM erzeugt neuen Graph     │
-│      │               → zurueck zum Validator     │
+│      ├── DISPROVEN → verwerfen ODER Feedback     │
 │      │                                           │
-│      ├── UNDECIDABLE → LLM reformuliert Contract │
-│      │                 oder erzeugt Lean-Beweis  │
-│      │                 → zurueck zum Prover      │
+│      ├── UNDECIDABLE → LLM erzeugt Lean-Beweis  │
 │      │                                           │
 │      └── ALL PROVEN ▼                            │
 │                                                  │
-│   Superoptimizer:                                │
-│      Exhaustive Suche nach optimaler Instruktion │
-│      pro Funktion (keine Zeitbegrenzung)         │
+│   Fitness-Bewertung (bei Typ 2/3/4):            │
+│      Sandbox-Execution + statische Analyse       │
+│      Pareto-Front: Throughput × Speicher ×       │
+│                    Latenz × Neuartigkeit          │
+│                                                  │
+│   Optional: Zurueck zu Phase 1 (Evolution)       │
+│      Mutation + Kreuzung → neue Generation       │
 │                                                  │
 └──────────────────┬──────────────────────────────┘
-                   │ Vollstaendig verifizierter,
-                   │ superoptimierter Graph
+                   │ Bester Kandidat (oder Pareto-Set)
                    ▼
-              MLIR → LLVM → Binary
+              Superoptimizer → MLIR → LLVM → Binary
 ```
 
 
-## 10. Vergleich v2 → v3
+## 11. Vergleich v2 → v3
 
 ```
 Aspekt              v2                         v3
 ───────────────────────────────────────────────────────────────
-Node-Typen          11 (C,E,K,V,T,H,M,F,R,D,P) 7 (C,E,K,V,T,M,R)
-Zwischenformat      JSON (menschenlesbar)       Binaer (nur fuer KI)
-Variablennamen      Ja (intent, debug)          Nein (nur Content-Hash)
-Fehlerbehandlung    F-Node + Policy             Normale Graph-Pfade
-SMT Timeout         5 Sekunden                  Kein Timeout
-Unbewiesene Contr.  Runtime-Check (Branch)      Graph UNGUELTIG
-Iterationen LLM     Max 3                       Unbegrenzt
-Compile-Zeit        ~2 Sekunden                 Minuten bis Stunden
-Debug-Support       D-Node + Trace              Keiner
-Optimierung         LLVM -O3                    Superoptimizer
-Module              P-Node (Organisation)       Flacher Graph
-Korrektheitsgarantie Teilweise                  Total
-Runtime-Checks      0-N pro Binary              EXAKT 0
+Node-Typen          11                         7
+Zwischenformat      JSON (menschenlesbar)      Binaer
+Variablennamen      Ja                         Nein (Content-Hash)
+Fehlerbehandlung    F-Node + Policy            Normale Graph-Pfade
+SMT Timeout         5 Sekunden                 Kein Timeout
+Unbewiesene Contr.  Runtime-Check (Branch)     Graph UNGUELTIG
+Iterationen LLM     Max 3                      Unbegrenzt
+Compile-Zeit        ~2 Sekunden                Minuten bis Stunden
+Debug-Support       D-Node + Trace             Keiner
+Optimierung         LLVM -O3                   Superoptimizer
+Module              P-Node (Organisation)      Flacher Graph
+Korrektheitsgarantie Teilweise                 Total
+Runtime-Checks      0-N pro Binary             EXAKT 0
+Kreativitaet        Keine (1:1 Uebersetzung)   Explorative Synthese
+Varianten           1 Graph pro Anforderung    50-10000 Kandidaten
+Wissensbasis        Keine                      Wachsendes Graph Repository
 ```
 
 
-## 11. Konsequenzen
+## 12. Konsequenzen
 
 **Was dadurch moeglich wird:**
 
@@ -346,16 +724,21 @@ Runtime-Checks      0-N pro Binary              EXAKT 0
    - Besser als handgeschriebener Assembler
    - Pro Plattform individuell optimiert
 
-3. Keine Altlasten menschlicher Programmierung
-   - Kein Exception-Overhead
-   - Kein Debug-Overhead
-   - Kein Naming/Scoping-Overhead
-   - Kein Modul-Overhead
-   - Kein Abstraktions-Overhead
+3. KI kann NEUARTIGE ALGORITHMEN erfinden
+   - Nicht limitiert auf bekannte Patterns
+   - Explorative Synthese mit genetischer Evolution
+   - Constraint-Relaxation oeffnet neue Loesungsraeume
+   - Korrektheit ist garantiert — Kreativitaet ist frei
 
-4. Extreme Kompaktheit
-   - Hello World: nur die tatsaechlich noetigen Instruktionen
+4. Wachsendes Oekosystem eigener Erfindungen
+   - Graph Repository als "algorithmische DNA"
+   - Jede Synthese erweitert die Wissensbasis
+   - Neuartigkeits-Metrik verhindert Stagnation
+   - System wird ueber Zeit kreativer
+
+5. Extreme Kompaktheit
    - Kein Boilerplate, kein Framework, kein Overhead
+   - Keine menschlichen Abstraktionen, nur Berechnung
 ```
 
 **Was dadurch verloren geht:**
@@ -363,15 +746,14 @@ Runtime-Checks      0-N pro Binary              EXAKT 0
 ```
 1. Kein Mensch kann den Output lesen oder debuggen
 2. Kein Mensch kann den Output modifizieren
-3. Compile-Zeiten von Minuten bis Stunden
+3. Compile-Zeiten von Minuten bis Stunden (oder Tagen bei ENTDECKE)
 4. Abhaengig von SMT-Solver-Faehigkeiten
-   (manche Contracts sind prinzipiell unbeweisbar)
-5. LLM muss beweisbare Graphen erzeugen koennen
-   (erfordert Training auf formale Methoden)
+5. Erfundene Algorithmen sind nicht erklaerbar
+   (sie funktionieren beweisbar, aber niemand versteht warum)
 ```
 
 
-## 12. Minimal-Beispiel: Hello World (v3)
+## 13. Minimal-Beispiel: Hello World (v3, Typ UEBERSETZE)
 
 ```
 Kein JSON. Kein Name. Kein Kommentar. Nur Struktur:
