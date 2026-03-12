@@ -1,0 +1,11 @@
+[package]
+name = "flux-ftl"
+version = "1.0.0"
+edition = "2024"
+description = "FTL (FLUX Text Language) Parser — Text to AST for the FLUX computation substrate"
+
+[dependencies]
+pest = "2.7"
+pest_derive = "2.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

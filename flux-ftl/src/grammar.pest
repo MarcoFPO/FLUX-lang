@@ -1,0 +1,522 @@
+// =============================================================================
+// FTL (FLUX Text Language) — Complete PEG Grammar for pest
+// =============================================================================
+// Covers: T, R, C, E, K, V, M, X nodes, entry point, contracts, concurrency,
+// FFI, and all constructs from FLUX v3 Spec.
+//
+// pest is PEG: first matching alternative wins. Specific ops are listed
+// before generic catch-alls. Keywords in atomic rules use inline patterns
+// so pest does not try to skip implicit whitespace inside them.
+// =============================================================================
+
+// ---------------------------------------------------------------------------
+// Top-Level
+// ---------------------------------------------------------------------------
+
+program = { SOI ~ statement* ~ EOI }
+
+statement = {
+    type_def
+  | region_def
+  | compute_def
+  | effect_def
+  | control_def
+  | contract_def
+  | memory_def
+  | extern_def
+  | entry_def
+}
+
+// ---------------------------------------------------------------------------
+// Whitespace & Comments (all implicitly skipped between tokens)
+// ---------------------------------------------------------------------------
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
+
+// ---------------------------------------------------------------------------
+// IDs and References
+// ---------------------------------------------------------------------------
+// All node IDs are atomic — no implicit whitespace inside.
+// suffix_chars is inlined because atomic rules do not invoke sub-rules
+// through pest's implicit whitespace mechanism.
+
+suffix_chars = _{ (ASCII_ALPHANUMERIC | "_")+ }
+
+t_id = @{ "T:" ~ suffix_chars }
+r_id = @{ "R:" ~ suffix_chars }
+c_id = @{ "C:" ~ suffix_chars }
+e_id = @{ "E:" ~ suffix_chars }
+k_id = @{ "K:" ~ suffix_chars }
+v_id = @{ "V:" ~ suffix_chars }
+m_id = @{ "M:" ~ suffix_chars }
+x_id = @{ "X:" ~ suffix_chars }
+
+node_ref = @{ ("T" | "R" | "C" | "E" | "K" | "V" | "M" | "X") ~ ":" ~ suffix_chars }
+
+// ---------------------------------------------------------------------------
+// Builtin Types & TypeRef
+// ---------------------------------------------------------------------------
+// Ordered longest-first to prevent "u8" from matching when input is "u8x".
+// Word boundary is enforced by negative lookahead for alphanumeric.
+
+builtin_type = @{
+    ( "u64" | "u32" | "u16" | "u8"
+    | "i64" | "i32" | "i16" | "i8"
+    | "f64" | "f32"
+    | "bool"
+    | "unit"
+    ) ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+type_ref = { t_id | builtin_type }
+
+// ---------------------------------------------------------------------------
+// Literals
+// ---------------------------------------------------------------------------
+
+float_lit   = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+integer_lit = @{ "-"? ~ ASCII_DIGIT+ }
+bool_lit    = @{ ("true" | "false") ~ !(ASCII_ALPHANUMERIC | "_") }
+string_lit  = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+byte_array  =  { "[" ~ integer_lit ~ ("," ~ integer_lit)* ~ "]" }
+
+literal = { float_lit | bool_lit | integer_lit | string_lit }
+
+// ---------------------------------------------------------------------------
+// T-Node (Type Definitions)
+// ---------------------------------------------------------------------------
+
+type_def = {
+    t_id ~ "=" ~ type_body
+}
+
+type_body = {
+    type_integer
+  | type_float
+  | type_boolean
+  | type_unit
+  | type_struct
+  | type_array
+  | type_variant
+  | type_fn
+  | type_opaque
+}
+
+type_integer = { "integer" ~ "{" ~ "bits" ~ ":" ~ integer_lit
+                 ~ ("," ~ "signed" ~ ":" ~ bool_lit)? ~ "}" }
+
+type_float   = { "float" ~ "{" ~ "bits" ~ ":" ~ integer_lit ~ "}" }
+
+type_boolean = { "boolean" }
+
+type_unit    = { "unit" }
+
+// struct { fields: [name: TypeRef, ...], layout: PACKED|C_ABI|OPTIMAL }
+type_struct = { "struct" ~ "{" ~ "fields" ~ ":" ~ field_list
+                ~ ("," ~ "layout" ~ ":" ~ layout_kind)? ~ "}" }
+
+field_list  = { "[" ~ field_entry ~ ("," ~ field_entry)* ~ "]" }
+field_entry = { ident ~ ":" ~ type_ref }
+
+layout_kind = @{ "PACKED" | "C_ABI" | "OPTIMAL" }
+
+// array { element: TypeRef, max_length: N, constraint: Formula? }
+type_array = { "array" ~ "{" ~ "element" ~ ":" ~ type_ref
+               ~ "," ~ "max_length" ~ ":" ~ integer_lit
+               ~ ("," ~ "constraint" ~ ":" ~ formula)? ~ "}" }
+
+// variant { cases: [TAG: TypeRef, ...] }
+type_variant      = { "variant" ~ "{" ~ "cases" ~ ":" ~ variant_case_list ~ "}" }
+variant_case_list = { "[" ~ variant_case ~ ("," ~ variant_case)* ~ "]" }
+variant_case      = { tag_name ~ ":" ~ type_ref }
+
+tag_name = @{ ASCII_ALPHA_UPPER ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// fn { params: [TypeRef, ...], result: TypeRef, effects: [Effect, ...] }
+type_fn = { "fn" ~ "{" ~ "params" ~ ":" ~ type_ref_list
+             ~ "," ~ "result" ~ ":" ~ type_ref
+             ~ ("," ~ "effects" ~ ":" ~ effect_list)? ~ "}" }
+
+type_ref_list = { "[" ~ (type_ref ~ ("," ~ type_ref)*)? ~ "]" }
+
+// opaque { size: N, align: N }
+type_opaque = { "opaque" ~ "{" ~ "size" ~ ":" ~ integer_lit
+                ~ "," ~ "align" ~ ":" ~ integer_lit ~ "}" }
+
+// ---------------------------------------------------------------------------
+// R-Node (Region)
+// ---------------------------------------------------------------------------
+
+region_def = { r_id ~ "=" ~ "region" ~ "{"
+               ~ "lifetime" ~ ":" ~ lifetime_kind
+               ~ ("," ~ "parent" ~ ":" ~ r_id)? ~ "}" }
+
+lifetime_kind = @{ ("static" | "scoped") ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ---------------------------------------------------------------------------
+// C-Node (Compute)
+// ---------------------------------------------------------------------------
+
+compute_def = {
+    c_id ~ "=" ~ compute_body
+}
+
+// Order matters: specific ops before generic catch-all.
+// const_bytes before const (prefix match).
+// atomic_* before generic (prefix match).
+compute_body = {
+    compute_const_bytes
+  | compute_const
+  | compute_atomic_cas
+  | compute_atomic_load
+  | compute_atomic_store
+  | compute_call_pure
+  | compute_arith_op
+  | compute_struct_array_op
+  | compute_generic_op
+}
+
+// const { value: Literal, type: TypeRef, region: R:id? }
+compute_const = { "const" ~ "{" ~ "value" ~ ":" ~ literal
+                  ~ "," ~ "type" ~ ":" ~ type_ref
+                  ~ ("," ~ "region" ~ ":" ~ r_id)? ~ "}" }
+
+// const_bytes { value: [byte, ...], type: TypeRef, region: R:id }
+compute_const_bytes = { "const_bytes" ~ "{" ~ "value" ~ ":" ~ byte_array
+                        ~ "," ~ "type" ~ ":" ~ type_ref
+                        ~ "," ~ "region" ~ ":" ~ r_id ~ "}" }
+
+// Arithmetic / Logic operations
+// Ordered: longer names before shorter prefixes (neq before neg, lte before lt, etc.)
+arith_op_name = @{
+    ( "add" | "sub" | "mul" | "div" | "mod"
+    | "and" | "or" | "xor" | "shl" | "shr"
+    | "neq" | "eq"
+    | "lte" | "lt" | "gte" | "gt"
+    | "not" | "neg"
+    ) ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+compute_arith_op = { arith_op_name ~ "{"
+                     ~ "inputs" ~ ":" ~ node_ref_list
+                     ~ "," ~ "type" ~ ":" ~ type_ref ~ "}" }
+
+// Struct/Array/Variant operations
+struct_array_op_name = @{
+    ( "array_length"
+    | "struct_get"
+    | "struct_set"
+    | "variant_tag"
+    | "variant_get"
+    | "variant_wrap"
+    ) ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+compute_struct_array_op = { struct_array_op_name ~ "{" ~ compute_field_pairs ~ "}" }
+
+// call_pure { target: "name", inputs: [...], type: TypeRef }
+compute_call_pure = { "call_pure" ~ "{"
+                      ~ "target" ~ ":" ~ string_lit
+                      ~ "," ~ "inputs" ~ ":" ~ node_ref_list
+                      ~ "," ~ "type" ~ ":" ~ type_ref ~ "}" }
+
+// Atomic operations (concurrency)
+memory_order = @{
+    ( "SEQ_CST" | "ACQUIRE_RELEASE" | "ACQUIRE" | "RELEASE" | "RELAXED"
+    ) ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+compute_atomic_load = { "atomic_load" ~ "{"
+                        ~ "source" ~ ":" ~ m_id
+                        ~ "," ~ "order" ~ ":" ~ memory_order
+                        ~ "," ~ "type" ~ ":" ~ type_ref ~ "}" }
+
+compute_atomic_store = { "atomic_store" ~ "{"
+                         ~ "target" ~ ":" ~ m_id
+                         ~ "," ~ "value" ~ ":" ~ node_ref
+                         ~ "," ~ "order" ~ ":" ~ memory_order ~ "}" }
+
+compute_atomic_cas = { "atomic_cas" ~ "{"
+                       ~ "target" ~ ":" ~ m_id
+                       ~ "," ~ "expected" ~ ":" ~ node_ref
+                       ~ "," ~ "desired" ~ ":" ~ node_ref
+                       ~ "," ~ "order" ~ ":" ~ memory_order
+                       ~ "," ~ "success" ~ ":" ~ node_ref
+                       ~ "," ~ "failure" ~ ":" ~ node_ref ~ "}" }
+
+// Generic compute op (catch-all for named ops like bhaskara_approx, etc.)
+compute_generic_op = { generic_op_name ~ "{" ~ compute_field_pairs ~ "}" }
+
+generic_op_name = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
+
+// Key-value pairs inside generic braces
+compute_field_pairs = { compute_field_pair ~ ("," ~ compute_field_pair)* }
+compute_field_pair  = { ident ~ ":" ~ compute_field_value }
+
+compute_field_value = {
+    node_ref_list
+  | effect_list
+  | byte_array
+  | type_ref
+  | node_ref
+  | literal
+  | memory_order
+  | tag_name
+  | ident
+}
+
+// ---------------------------------------------------------------------------
+// E-Node (Effect)
+// ---------------------------------------------------------------------------
+
+effect_def = {
+    e_id ~ "=" ~ effect_body
+}
+
+// Order: call_extern and syscall_exit before generic syscalls, generic last.
+effect_body = {
+    effect_call_extern
+  | effect_syscall_exit
+  | effect_syscall
+  | effect_generic
+}
+
+// syscall_exit has no success/failure outputs
+effect_syscall_exit = { "syscall_exit" ~ "{"
+                        ~ "inputs" ~ ":" ~ node_ref_list
+                        ~ "," ~ "type" ~ ":" ~ type_ref
+                        ~ "," ~ "effects" ~ ":" ~ effect_list ~ "}" }
+
+// Named syscalls with success/failure: syscall_write, syscall_read, syscall_open, etc.
+syscall_name = @{
+    ( "syscall_write"
+    | "syscall_read"
+    | "syscall_open"
+    | "syscall_ioctl"
+    | "syscall_close"
+    ) ~ !(ASCII_ALPHANUMERIC | "_")
+}
+
+effect_syscall = { syscall_name ~ "{"
+                   ~ "inputs" ~ ":" ~ node_ref_list
+                   ~ "," ~ "type" ~ ":" ~ type_ref
+                   ~ "," ~ "effects" ~ ":" ~ effect_list
+                   ~ "," ~ "success" ~ ":" ~ node_ref
+                   ~ "," ~ "failure" ~ ":" ~ node_ref ~ "}" }
+
+// call_extern { target: X:id, inputs: [...], type: TypeRef, effects: [...],
+//               success: NodeRef, failure: NodeRef }
+effect_call_extern = { "call_extern" ~ "{"
+                       ~ "target" ~ ":" ~ x_id
+                       ~ "," ~ "inputs" ~ ":" ~ node_ref_list
+                       ~ "," ~ "type" ~ ":" ~ type_ref
+                       ~ "," ~ "effects" ~ ":" ~ effect_list
+                       ~ "," ~ "success" ~ ":" ~ node_ref
+                       ~ "," ~ "failure" ~ ":" ~ node_ref ~ "}" }
+
+// Generic effect (catch-all for future syscalls / effects)
+effect_generic = { generic_op_name ~ "{" ~ compute_field_pairs ~ "}" }
+
+// ---------------------------------------------------------------------------
+// K-Node (Control)
+// ---------------------------------------------------------------------------
+
+control_def = {
+    k_id ~ "=" ~ control_body
+}
+
+control_body = {
+    control_seq
+  | control_branch
+  | control_loop
+  | control_par
+}
+
+// seq { steps: [...] }
+control_seq = { "seq" ~ "{" ~ "steps" ~ ":" ~ node_ref_list ~ "}" }
+
+// branch { condition: NodeRef, true: NodeRef, false: NodeRef }
+control_branch = { "branch" ~ "{"
+                   ~ "condition" ~ ":" ~ node_ref
+                   ~ "," ~ "true" ~ ":" ~ node_ref
+                   ~ "," ~ "false" ~ ":" ~ node_ref ~ "}" }
+
+// loop { condition: NodeRef, body: NodeRef, state: NodeRef, state_type: TypeRef }
+control_loop = { "loop" ~ "{"
+                 ~ "condition" ~ ":" ~ node_ref
+                 ~ "," ~ "body" ~ ":" ~ node_ref
+                 ~ "," ~ "state" ~ ":" ~ node_ref
+                 ~ "," ~ "state_type" ~ ":" ~ type_ref ~ "}" }
+
+// par { branches: [...], sync: BARRIER|NONE, memory_order: MemoryOrder? }
+sync_mode = @{ ("BARRIER" | "NONE") ~ !(ASCII_ALPHANUMERIC | "_") }
+
+control_par = { "par" ~ "{"
+                ~ "branches" ~ ":" ~ node_ref_list
+                ~ "," ~ "sync" ~ ":" ~ sync_mode
+                ~ ("," ~ "memory_order" ~ ":" ~ memory_order)? ~ "}" }
+
+// ---------------------------------------------------------------------------
+// V-Node (Contract / Verify)
+// ---------------------------------------------------------------------------
+
+contract_def = {
+    v_id ~ "=" ~ "contract" ~ "{"
+    ~ "target" ~ ":" ~ node_ref
+    ~ "," ~ contract_clauses ~ "}"
+}
+
+contract_clauses = { contract_clause ~ ("," ~ contract_clause)* }
+
+contract_clause = {
+    "pre" ~ ":" ~ formula
+  | "post" ~ ":" ~ formula
+  | "invariant" ~ ":" ~ formula
+  | "assume" ~ ":" ~ formula
+  | "trust" ~ ":" ~ trust_level
+}
+
+trust_level = @{ ("PROVEN" | "EXTERN") ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ---------------------------------------------------------------------------
+// Formula Language (SMT-LIB2-compatible subset)
+// ---------------------------------------------------------------------------
+// Operator precedence (low to high):
+//   OR < AND < NOT < Comparison (==,!=,<,<=,>,>=) < Add/Sub < Mul/Div/Mod < Unary
+
+formula = { formula_or }
+
+formula_or  = { formula_and ~ ("OR" ~ formula_and)* }
+formula_and = { formula_not ~ ("AND" ~ formula_not)* }
+formula_not = { "NOT" ~ formula_not | formula_comparison }
+
+formula_comparison = { formula_additive ~ (comparison_op ~ formula_additive)? }
+
+comparison_op = @{ "==" | "!=" | "<=" | ">=" | "<" | ">" }
+
+formula_additive       = { formula_multiplicative ~ (additive_op ~ formula_multiplicative)* }
+additive_op            = @{ "+" | "-" }
+
+formula_multiplicative = { formula_unary ~ (multiplicative_op ~ formula_unary)* }
+multiplicative_op      = @{ "*" | "/" | "%" }
+
+formula_unary = { "-" ~ formula_unary | formula_primary }
+
+// Primary expressions in formulas. Order matters:
+// - forall before ident (keyword)
+// - paren before everything else
+// - index_access before field_access (index_access starts with field_access)
+// - field_access before bare node_ref/ident
+// - func_call before bare ident
+// - special tokens (result, state, null) before bare ident
+// - literals
+formula_primary = {
+    formula_forall
+  | formula_paren
+  | formula_empty_set
+  | formula_index_access
+  | formula_field_access
+  | formula_func_call
+  | formula_special
+  | float_lit
+  | integer_lit
+  | bool_lit
+  | node_ref
+  | ident
+}
+
+formula_empty_set = { "{" ~ "}" }
+
+formula_paren = { "(" ~ formula ~ ")" }
+
+// forall var in start..end: Formula
+// forall (b1, b2) in branches: Formula
+formula_forall = { "forall" ~ forall_binding ~ ":" ~ formula }
+
+forall_binding = {
+    "(" ~ ident ~ "," ~ ident ~ ")" ~ "in" ~ ident
+  | ident ~ "in" ~ formula_additive ~ ".." ~ formula_additive
+}
+
+// Special tokens in contracts: result, state, null
+formula_special = @{ ("result" | "state" | "null") ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// field access: base.field.subfield  (at least one dot)
+// base can be node_ref or ident
+formula_field_access = { (node_ref | ident) ~ ("." ~ ident)+ }
+
+// index access: base[index] where base can include field access, optionally followed by .field
+formula_index_access = { (formula_field_access | node_ref | ident) ~ "[" ~ formula ~ "]" ~ ("." ~ ident)* }
+
+// function-like calls in formulas: region_valid(R:b2), shared_mnodes(b1, b2), etc.
+formula_func_call = { ident ~ "(" ~ (formula ~ ("," ~ formula)*)? ~ ")" }
+
+// ---------------------------------------------------------------------------
+// M-Node (Memory)
+// ---------------------------------------------------------------------------
+
+memory_def = {
+    m_id ~ "=" ~ memory_body
+}
+
+memory_body = {
+    memory_alloc
+  | memory_load
+  | memory_store
+}
+
+// alloc { type: TypeRef, region: R:id }
+memory_alloc = { "alloc" ~ "{"
+                 ~ "type" ~ ":" ~ type_ref
+                 ~ "," ~ "region" ~ ":" ~ r_id ~ "}" }
+
+// load { source: M:id, index: NodeRef, type: TypeRef }
+memory_load = { "load" ~ "{"
+                ~ "source" ~ ":" ~ m_id
+                ~ "," ~ "index" ~ ":" ~ node_ref
+                ~ "," ~ "type" ~ ":" ~ type_ref ~ "}" }
+
+// store { target: M:id, index: NodeRef, value: NodeRef }
+memory_store = { "store" ~ "{"
+                 ~ "target" ~ ":" ~ m_id
+                 ~ "," ~ "index" ~ ":" ~ node_ref
+                 ~ "," ~ "value" ~ ":" ~ node_ref ~ "}" }
+
+// ---------------------------------------------------------------------------
+// X-Node (Extern / FFI)
+// ---------------------------------------------------------------------------
+
+extern_def = {
+    x_id ~ "=" ~ "extern" ~ "{"
+    ~ "name" ~ ":" ~ string_lit
+    ~ "," ~ "abi" ~ ":" ~ abi_kind
+    ~ "," ~ "params" ~ ":" ~ type_ref_list
+    ~ "," ~ "result" ~ ":" ~ type_ref
+    ~ ("," ~ "effects" ~ ":" ~ effect_list)? ~ "}"
+}
+
+// "C" must come last — it is a prefix of "C_ABI" but abi_kind is atomic
+// so pest will try longest match first only if we order them correctly.
+abi_kind = @{ ("SYSTEM_V" | "AAPCS64" | "C") ~ !(ASCII_ALPHANUMERIC | "_") }
+
+// ---------------------------------------------------------------------------
+// Entry Point
+// ---------------------------------------------------------------------------
+
+entry_def = { "entry" ~ ":" ~ node_ref }
+
+// ---------------------------------------------------------------------------
+// Effects
+// ---------------------------------------------------------------------------
+
+effect_name = @{ ASCII_ALPHA_UPPER ~ (ASCII_ALPHANUMERIC | "_")* }
+effect_list = { "[" ~ (effect_name ~ ("," ~ effect_name)*)? ~ "]" }
+
+// ---------------------------------------------------------------------------
+// Shared Helpers
+// ---------------------------------------------------------------------------
+
+node_ref_list = { "[" ~ (node_ref ~ ("," ~ node_ref)*)? ~ "]" }
+
+ident = @{ ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_")* }
