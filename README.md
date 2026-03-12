@@ -106,5 +106,7 @@ ENTDECKE     "Finde Berechnung mit Eigenschaft X" → Offene Suche im Graphen-Ra
 MIT
 
 ## Danksagungen 
-Gerd für die Inspiration 
-Bea für das Logo
+- Bea für das Logo
+- Gerd für die Inspiration
+- Michi für die Kommentare
+
