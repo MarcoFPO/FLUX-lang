@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.gif" alt="FLUX Validator Logo" width="400">
+</p>
+
 # FLUX — AI-Native Computation Substrate
 
 **FLUX** ist eine Ausfuehrungsarchitektur, bei der KI-Systeme (LLMs) Computation-Graphen in FTL (FLUX Text Language) erzeugen, die formal verifiziert und zu optimalem Maschinencode kompiliert werden.
