@@ -1056,6 +1056,7 @@ mod tests {
     /// Helper: build a minimal valid program with a K:main entry.
     fn minimal_program() -> Program {
         Program {
+            imports: vec![],
             types: vec![],
             regions: vec![],
             computes: vec![],
@@ -1193,6 +1194,7 @@ mod tests {
     #[test]
     fn invalid_entry() {
         let p = Program {
+            imports: vec![],
             types: vec![],
             regions: vec![],
             computes: vec![],

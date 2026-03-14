@@ -13,7 +13,9 @@
 // Top-Level
 // ---------------------------------------------------------------------------
 
-program = { SOI ~ statement* ~ EOI }
+program = { SOI ~ import_stmt* ~ statement* ~ EOI }
+
+import_stmt = { "import" ~ string_lit }
 
 statement = {
     type_def

@@ -1079,6 +1079,7 @@ mod tests {
         types: Vec<TypeDef>,
     ) -> Program {
         Program {
+            imports: vec![],
             types,
             regions: vec![],
             computes,
@@ -1098,6 +1099,7 @@ mod tests {
         controls: Vec<ControlDef>,
     ) -> Program {
         Program {
+            imports: vec![],
             types,
             regions: vec![],
             computes,

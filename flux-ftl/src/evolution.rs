@@ -832,6 +832,7 @@ impl GraphPool {
         let best = self.best().cloned().unwrap_or_else(|| {
             Individual::new(
                 Program {
+                    imports: vec![],
                     types: vec![],
                     regions: vec![],
                     computes: vec![],
