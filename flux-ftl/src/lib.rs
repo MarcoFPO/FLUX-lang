@@ -2,6 +2,7 @@ pub mod ast;
 pub mod codegen;
 pub mod compiler;
 pub mod error;
+pub mod feedback;
 pub mod parser;
 pub mod prover;
 pub mod region_checker;

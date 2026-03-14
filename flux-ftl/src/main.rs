@@ -3,6 +3,7 @@ use std::io::Read;
 use serde::Serialize;
 
 use flux_ftl::compiler::{self, CompileMetadata};
+use flux_ftl::feedback::{self, LlmFeedback, ValidationError as FeedbackValidationError};
 use flux_ftl::parser::parse_ftl;
 use flux_ftl::error::Status;
 use flux_ftl::validator::validate;
@@ -23,6 +24,8 @@ struct FullResult {
     proof_results: Vec<ProofResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     compiled: Option<CompileMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    feedback: Option<LlmFeedback>,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,6 +56,11 @@ fn main() {
     let ast = match parse_result.status {
         Status::Ok => parse_result.ast.unwrap(),
         Status::Error => {
+            let fb = feedback::generate_feedback(
+                &parse_result.errors,
+                &[],
+                &[],
+            );
             let out = FullResult {
                 status: FullStatus::ParseError,
                 ast: None,
@@ -60,6 +68,7 @@ fn main() {
                 validation_errors: Vec::new(),
                 proof_results: Vec::new(),
                 compiled: None,
+                feedback: Some(fb),
             };
             println!("{}", serde_json::to_string(&out).unwrap());
             return;
@@ -141,6 +150,24 @@ fn main() {
         None
     };
 
+    // Phase 7: Generate LLM feedback
+    let feedback_validation_errors: Vec<FeedbackValidationError> = validation_errors
+        .iter()
+        .map(|ge| FeedbackValidationError {
+            error_code: ge.error_code,
+            node_id: ge.node_id.clone(),
+            violation: ge.violation.clone(),
+            message: ge.message.clone(),
+            suggestion: ge.suggestion.clone(),
+        })
+        .collect();
+
+    let fb = feedback::generate_feedback(
+        &[],
+        &feedback_validation_errors,
+        &proof_results,
+    );
+
     let out = FullResult {
         status,
         ast: Some(ast),
@@ -148,6 +175,7 @@ fn main() {
         validation_errors,
         proof_results,
         compiled,
+        feedback: Some(fb),
     };
 
     println!("{}", serde_json::to_string(&out).unwrap());
