@@ -313,7 +313,7 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                 "generic",
                 "",
                 config.opt_level.to_inkwell(),
-                RelocMode::Default,
+                RelocMode::PIC,
                 CodeModel::Default,
             )
         {
@@ -2276,7 +2276,7 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                 "generic",
                 "",
                 self.config.opt_level.to_inkwell(),
-                RelocMode::Default,
+                RelocMode::PIC,
                 CodeModel::Default,
             )
             .ok_or_else(|| {
