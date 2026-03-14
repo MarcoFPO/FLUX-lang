@@ -74,8 +74,8 @@ fn snake_game_mixed_results() {
         assert_eq!(r.2, ProofStatus::Disproven);
     }
 
-    // V:e9: invariant with symbolic state.length → DISPROVEN
-    assert_eq!(results[8].2, ProofStatus::Disproven);
+    // V:e9: invariant state.length <= 800 → PROVEN (array max_length constraint)
+    assert_eq!(results[8].2, ProofStatus::Proven);
 
     // V:e10: pre C:c_alsa_path != null → PROVEN (ConstBytes is non-null)
     assert_eq!(results[9].2, ProofStatus::Proven);
@@ -94,6 +94,6 @@ fn concurrency_predicate_unknown() {
     // V:e2: invariant C:s1_load.val <= 10 → DISPROVEN (symbolic atomic_load)
     assert_eq!(results[1], ("V:e2".into(), "invariant".into(), ProofStatus::Disproven));
 
-    // V:e3: pre C:s2_load.val >= 0 → DISPROVEN (symbolic atomic_load)
-    assert_eq!(results[2], ("V:e3".into(), "pre".into(), ProofStatus::Disproven));
+    // V:e3: pre C:s2_load.val >= 0 → PROVEN (unsigned type T:a1 constrains val >= 0)
+    assert_eq!(results[2], ("V:e3".into(), "pre".into(), ProofStatus::Proven));
 }

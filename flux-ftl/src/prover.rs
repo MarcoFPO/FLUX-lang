@@ -48,8 +48,8 @@ impl Default for ProverConfig {
 
 struct ProverContext<'a> {
     consts: HashMap<String, &'a ComputeDef>,
-    #[allow(dead_code)] // used in later phases for struct field resolution
     types: HashMap<String, &'a TypeDef>,
+    controls: HashMap<String, &'a ControlDef>,
 }
 
 impl<'a> ProverContext<'a> {
@@ -62,8 +62,288 @@ impl<'a> ProverContext<'a> {
         for t in &program.types {
             types.insert(t.id.as_str().to_string(), t);
         }
-        ProverContext { consts, types }
+        let mut controls = HashMap::new();
+        for k in &program.controls {
+            controls.insert(k.id.as_str().to_string(), k);
+        }
+        ProverContext { consts, types, controls }
     }
+}
+
+// ---------------------------------------------------------------------------
+// resolve_type — TypeRef → TypeBody
+// ---------------------------------------------------------------------------
+
+fn resolve_type<'a>(ctx: &'a ProverContext, type_ref: &TypeRef) -> Option<&'a TypeBody> {
+    match type_ref {
+        TypeRef::Id { node } => ctx.types.get(node.as_str()).map(|td| &td.body),
+        TypeRef::Builtin { name } => {
+            // Synthesize TypeBody for builtin types
+            // We return None here and handle builtins via resolve_type_body_for_builtin
+            BUILTIN_TYPES.iter().find(|(n, _)| *n == name.as_str()).map(|(_, b)| b)
+        }
+    }
+}
+
+/// Static builtin type definitions for common types.
+static BUILTIN_TYPES: &[(&str, TypeBody)] = &[
+    ("u8", TypeBody::Integer { bits: 8, signed: false }),
+    ("u16", TypeBody::Integer { bits: 16, signed: false }),
+    ("u32", TypeBody::Integer { bits: 32, signed: false }),
+    ("u64", TypeBody::Integer { bits: 64, signed: false }),
+    ("i8", TypeBody::Integer { bits: 8, signed: true }),
+    ("i16", TypeBody::Integer { bits: 16, signed: true }),
+    ("i32", TypeBody::Integer { bits: 32, signed: true }),
+    ("i64", TypeBody::Integer { bits: 64, signed: true }),
+    ("bool", TypeBody::Boolean),
+];
+
+// ---------------------------------------------------------------------------
+// extract_type_ref — get type_ref from a ComputeOp if available
+// ---------------------------------------------------------------------------
+
+fn extract_type_ref(op: &ComputeOp) -> Option<&TypeRef> {
+    match op {
+        ComputeOp::Const { type_ref, .. } => Some(type_ref),
+        ComputeOp::ConstBytes { type_ref, .. } => Some(type_ref),
+        ComputeOp::Arith { type_ref, .. } => Some(type_ref),
+        ComputeOp::CallPure { type_ref, .. } => Some(type_ref),
+        ComputeOp::Generic { type_ref, .. } => Some(type_ref),
+        ComputeOp::AtomicLoad { type_ref, .. } => Some(type_ref),
+        ComputeOp::AtomicStore { .. } => None,
+        ComputeOp::AtomicCas { .. } => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// collect_symbolic_names — extract symbolic variable names from a formula
+// ---------------------------------------------------------------------------
+
+fn collect_symbolic_expr_names(ctx: &ProverContext, expr: &Expr, names: &mut Vec<String>) {
+    match expr {
+        Expr::FieldAccess { node, fields } => {
+            if resolve_field_access(ctx, node.as_str(), fields).is_none() {
+                let name = if fields.is_empty() {
+                    node.as_str().to_string()
+                } else {
+                    format!("{}.{}", node.as_str(), fields.join("."))
+                };
+                names.push(name);
+            }
+        }
+        Expr::Ident { name } => {
+            if name != "null" && resolve_field_access(ctx, name, &[]).is_none() {
+                names.push(name.clone());
+            }
+        }
+        Expr::Result => names.push("result".to_string()),
+        Expr::State => names.push("state".to_string()),
+        Expr::BinOp { left, right, .. } => {
+            collect_symbolic_expr_names(ctx, left, names);
+            collect_symbolic_expr_names(ctx, right, names);
+        }
+        _ => {}
+    }
+}
+
+fn collect_symbolic_formula_names(ctx: &ProverContext, formula: &Formula, names: &mut Vec<String>) {
+    match formula {
+        Formula::Comparison { left, right, .. } => {
+            collect_symbolic_expr_names(ctx, left, names);
+            collect_symbolic_expr_names(ctx, right, names);
+        }
+        Formula::And { left, right } | Formula::Or { left, right } => {
+            collect_symbolic_formula_names(ctx, left, names);
+            collect_symbolic_formula_names(ctx, right, names);
+        }
+        Formula::Not { inner } => collect_symbolic_formula_names(ctx, inner, names),
+        Formula::Forall { range_start, range_end, body, .. } => {
+            collect_symbolic_expr_names(ctx, range_start, names);
+            collect_symbolic_expr_names(ctx, range_end, names);
+            collect_symbolic_formula_names(ctx, body, names);
+        }
+        Formula::FieldAccess { node, fields } => {
+            if resolve_field_access(ctx, node.as_str(), fields).is_none() {
+                let name = if fields.is_empty() {
+                    node.as_str().to_string()
+                } else {
+                    format!("{}.{}", node.as_str(), fields.join("."))
+                };
+                names.push(name);
+            }
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// collect_type_constraints — generate Z3 constraints from type information
+// ---------------------------------------------------------------------------
+
+fn collect_type_constraints<'z>(
+    z3_ctx: &'z Context,
+    prover_ctx: &ProverContext,
+    contract: &ContractDef,
+) -> Vec<Bool<'z>> {
+    let mut constraints = Vec::new();
+
+    // Collect all symbolic variable names from all clauses in this contract
+    let mut symbolic_names = Vec::new();
+    for clause in &contract.clauses {
+        let formula = match clause {
+            ContractClause::Pre { formula } => formula,
+            ContractClause::Post { formula } => formula,
+            ContractClause::Invariant { formula } => formula,
+            ContractClause::Assume { formula } => formula,
+        };
+        collect_symbolic_formula_names(prover_ctx, formula, &mut symbolic_names);
+    }
+    symbolic_names.sort();
+    symbolic_names.dedup();
+
+    for sym_name in &symbolic_names {
+        // Case 1: C-Node field access like "C:s2_load.val"
+        if let Some(dot_pos) = sym_name.find('.') {
+            let node_id = &sym_name[..dot_pos];
+            let field = &sym_name[dot_pos + 1..];
+
+            if let Some(cdef) = prover_ctx.consts.get(node_id)
+                && let Some(type_ref) = extract_type_ref(&cdef.op)
+                && field == "val"
+            {
+                add_type_constraints_for_var(
+                    z3_ctx, prover_ctx, sym_name, type_ref, &mut constraints,
+                );
+            }
+        }
+
+        // Case 2: "state.length" or "state.score" — resolve via loop state_type
+        if sym_name.starts_with("state.") {
+            let field_name = &sym_name["state.".len()..];
+            // Find the contract's target and look for a loop with state_type
+            if let Some(state_type_ref) = find_loop_state_type(prover_ctx, contract)
+                && let Some(type_body) = resolve_type(prover_ctx, state_type_ref)
+            {
+                add_struct_field_constraints(
+                    z3_ctx, prover_ctx, sym_name, field_name, type_body, &mut constraints,
+                );
+            }
+        }
+    }
+
+    constraints
+}
+
+/// Find the state_type of a loop that the contract targets (directly or indirectly).
+fn find_loop_state_type<'a>(
+    prover_ctx: &'a ProverContext,
+    contract: &ContractDef,
+) -> Option<&'a TypeRef> {
+    let target = contract.target.as_str();
+    // Direct target is a K-Node loop
+    if let Some(kdef) = prover_ctx.controls.get(target) {
+        if let ControlOp::Loop { state_type, .. } = &kdef.op {
+            return Some(state_type);
+        }
+    }
+    None
+}
+
+/// Add Z3 constraints for a variable based on its TypeRef.
+fn add_type_constraints_for_var<'z>(
+    z3_ctx: &'z Context,
+    prover_ctx: &ProverContext,
+    var_name: &str,
+    type_ref: &TypeRef,
+    constraints: &mut Vec<Bool<'z>>,
+) {
+    if let Some(type_body) = resolve_type(prover_ctx, type_ref) {
+        let z3_var = Int::new_const(z3_ctx, var_name);
+        match type_body {
+            TypeBody::Integer { bits, signed } => {
+                if !signed {
+                    // unsigned: 0 <= var < 2^bits
+                    constraints.push(z3_var.ge(&Int::from_i64(z3_ctx, 0)));
+                    if *bits < 64 {
+                        let max = 1i64 << bits;
+                        constraints.push(z3_var.lt(&Int::from_i64(z3_ctx, max)));
+                    }
+                } else {
+                    // signed: -2^(bits-1) <= var < 2^(bits-1)
+                    let half = 1i64 << (bits - 1);
+                    constraints.push(z3_var.ge(&Int::from_i64(z3_ctx, -half)));
+                    constraints.push(z3_var.lt(&Int::from_i64(z3_ctx, half)));
+                }
+            }
+            TypeBody::Boolean => {
+                constraints.push(z3_var.ge(&Int::from_i64(z3_ctx, 0)));
+                constraints.push(z3_var.le(&Int::from_i64(z3_ctx, 1)));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Add constraints for a struct field access like "state.length".
+/// If the struct has an array field whose associated length field can be identified,
+/// constrain the length to 0..=max_length.
+fn add_struct_field_constraints<'z>(
+    z3_ctx: &'z Context,
+    prover_ctx: &ProverContext,
+    var_name: &str,
+    field_name: &str,
+    struct_body: &TypeBody,
+    constraints: &mut Vec<Bool<'z>>,
+) {
+    if let TypeBody::Struct { fields, .. } = struct_body {
+        // First, find the field and add type-based constraints from its own type
+        let mut field_type_ref = None;
+        for sf in fields {
+            if sf.name == field_name {
+                field_type_ref = Some(&sf.type_ref);
+                break;
+            }
+        }
+        if let Some(tr) = field_type_ref {
+            add_type_constraints_for_var(z3_ctx, prover_ctx, var_name, tr, constraints);
+        }
+
+        // Second, if the field is named "length" or "len", look for an array field
+        // in the same struct and constrain by max_length.
+        if field_name == "length" || field_name == "len" {
+            for sf in fields {
+                if let Some(type_body) = resolve_type(prover_ctx, &sf.type_ref) {
+                    if let TypeBody::Array { max_length, .. } = type_body {
+                        let z3_var = Int::new_const(z3_ctx, var_name);
+                        constraints.push(z3_var.ge(&Int::from_i64(z3_ctx, 0)));
+                        constraints.push(z3_var.le(&Int::from_i64(z3_ctx, *max_length as i64)));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// collect_assume_axioms — gather Assume formulas preceding the clause
+// ---------------------------------------------------------------------------
+
+fn collect_assume_axioms<'z>(
+    z3_ctx: &'z Context,
+    prover_ctx: &ProverContext,
+    clauses: &[ContractClause],
+    current_idx: usize,
+) -> Vec<Bool<'z>> {
+    let mut axioms = Vec::new();
+    for clause in &clauses[..current_idx] {
+        if let ContractClause::Assume { formula } = clause {
+            if let Some(z3_f) = translate_formula(z3_ctx, prover_ctx, formula) {
+                axioms.push(z3_f);
+            }
+        }
+    }
+    axioms
 }
 
 // ---------------------------------------------------------------------------
@@ -239,13 +519,16 @@ fn translate_formula<'z>(
 }
 
 // ---------------------------------------------------------------------------
-// prove_clause — negation check pattern
+// prove_clause — negation check pattern with type constraints and assumptions
 // ---------------------------------------------------------------------------
 
 fn prove_clause<'z>(
     z3_ctx: &'z Context,
     prover_ctx: &ProverContext,
     clause: &ContractClause,
+    clause_idx: usize,
+    contract: &ContractDef,
+    type_constraints: &[Bool<'z>],
     config: &ProverConfig,
 ) -> (ProofStatus, Option<String>) {
     match clause {
@@ -273,6 +556,17 @@ fn prove_clause<'z>(
         params.set_u32("timeout", config.timeout_ms);
         params
     });
+
+    // Assert type constraints to narrow symbolic variable ranges
+    for tc in type_constraints {
+        solver.assert(tc);
+    }
+
+    // Assert Assume clauses preceding this clause as axioms
+    let assume_axioms = collect_assume_axioms(z3_ctx, prover_ctx, &contract.clauses, clause_idx);
+    for axiom in &assume_axioms {
+        solver.assert(axiom);
+    }
 
     // Negation check: assert NOT(formula), check SAT
     // UNSAT → formula always holds → PROVEN
@@ -315,6 +609,13 @@ pub fn prove_contracts(program: &Program, config: &ProverConfig) -> Vec<ProofRes
     for contract in &program.contracts {
         let is_extern = contract.trust.as_ref() == Some(&TrustLevel::Extern);
 
+        // Compute type constraints once per contract
+        let type_constraints = if is_extern {
+            vec![]
+        } else {
+            collect_type_constraints(&z3_ctx, &prover_ctx, contract)
+        };
+
         for (idx, clause) in contract.clauses.iter().enumerate() {
             let kind = match clause {
                 ContractClause::Pre { .. } => "pre",
@@ -326,7 +627,15 @@ pub fn prove_contracts(program: &Program, config: &ProverConfig) -> Vec<ProofRes
             let (status, counterexample) = if is_extern {
                 (ProofStatus::Assumed, None)
             } else {
-                prove_clause(&z3_ctx, &prover_ctx, clause, config)
+                prove_clause(
+                    &z3_ctx,
+                    &prover_ctx,
+                    clause,
+                    idx,
+                    contract,
+                    &type_constraints,
+                    config,
+                )
             };
 
             results.push(ProofResult {
@@ -351,9 +660,13 @@ pub fn prove_contracts(program: &Program, config: &ProverConfig) -> Vec<ProofRes
 mod tests {
     use super::*;
 
-    fn make_program(contracts: Vec<ContractDef>, computes: Vec<ComputeDef>) -> Program {
+    fn make_program_with_types(
+        contracts: Vec<ContractDef>,
+        computes: Vec<ComputeDef>,
+        types: Vec<TypeDef>,
+    ) -> Program {
         Program {
-            types: vec![],
+            types,
             regions: vec![],
             computes,
             effects: vec![],
@@ -363,6 +676,29 @@ mod tests {
             externs: vec![],
             entry: NodeRef::new("K:f1"),
         }
+    }
+
+    fn make_program_full(
+        contracts: Vec<ContractDef>,
+        computes: Vec<ComputeDef>,
+        types: Vec<TypeDef>,
+        controls: Vec<ControlDef>,
+    ) -> Program {
+        Program {
+            types,
+            regions: vec![],
+            computes,
+            effects: vec![],
+            controls,
+            contracts,
+            memories: vec![],
+            externs: vec![],
+            entry: NodeRef::new("K:f1"),
+        }
+    }
+
+    fn make_program(contracts: Vec<ContractDef>, computes: Vec<ComputeDef>) -> Program {
+        make_program_with_types(contracts, computes, vec![])
     }
 
     fn int_const(id: &str, val: i64) -> ComputeDef {
@@ -580,5 +916,311 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, ProofStatus::Proven);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 4: Type constraint propagation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_unsigned_atomic_load_gte_zero_proven() {
+        // C:s1.val >= 0 where C:s1 is atomic_load with type T:a1 (u64)
+        let u64_type = TypeDef {
+            id: NodeRef::new("T:a1"),
+            body: TypeBody::Integer { bits: 64, signed: false },
+        };
+        let atomic_load = ComputeDef {
+            id: NodeRef::new("C:s1"),
+            op: ComputeOp::AtomicLoad {
+                source: NodeRef::new("M:g1"),
+                order: MemoryOrder::Acquire,
+                type_ref: TypeRef::Id { node: NodeRef::new("T:a1") },
+            },
+        };
+        let contract = ContractDef {
+            id: NodeRef::new("V:e1"),
+            target: NodeRef::new("K:f1"),
+            clauses: vec![ContractClause::Pre {
+                formula: Formula::Comparison {
+                    left: Expr::FieldAccess {
+                        node: NodeRef::new("C:s1"),
+                        fields: vec!["val".into()],
+                    },
+                    op: CmpOp::Gte,
+                    right: Expr::IntLit { value: 0 },
+                },
+            }],
+            trust: None,
+        };
+
+        let program = make_program_with_types(
+            vec![contract],
+            vec![atomic_load],
+            vec![u64_type],
+        );
+        let results = prove_contracts(&program, &ProverConfig::default());
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, ProofStatus::Proven);
+    }
+
+    #[test]
+    fn test_signed_integer_range_constraint() {
+        // C:s1.val >= -128 AND C:s1.val < 128 where C:s1 has type i8
+        let i8_type = TypeDef {
+            id: NodeRef::new("T:a1"),
+            body: TypeBody::Integer { bits: 8, signed: true },
+        };
+        let compute = ComputeDef {
+            id: NodeRef::new("C:s1"),
+            op: ComputeOp::AtomicLoad {
+                source: NodeRef::new("M:g1"),
+                order: MemoryOrder::Acquire,
+                type_ref: TypeRef::Id { node: NodeRef::new("T:a1") },
+            },
+        };
+        // C:s1.val >= -128 should be proven
+        let contract = ContractDef {
+            id: NodeRef::new("V:e1"),
+            target: NodeRef::new("K:f1"),
+            clauses: vec![ContractClause::Pre {
+                formula: Formula::Comparison {
+                    left: Expr::FieldAccess {
+                        node: NodeRef::new("C:s1"),
+                        fields: vec!["val".into()],
+                    },
+                    op: CmpOp::Gte,
+                    right: Expr::IntLit { value: -128 },
+                },
+            }],
+            trust: None,
+        };
+
+        let program = make_program_with_types(
+            vec![contract],
+            vec![compute],
+            vec![i8_type],
+        );
+        let results = prove_contracts(&program, &ProverConfig::default());
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, ProofStatus::Proven);
+    }
+
+    #[test]
+    fn test_unsigned_out_of_range_disproven() {
+        // C:s1.val == -1 where C:s1 is u8 → DISPROVEN (u8 >= 0)
+        let u8_type = TypeDef {
+            id: NodeRef::new("T:a1"),
+            body: TypeBody::Integer { bits: 8, signed: false },
+        };
+        let compute = ComputeDef {
+            id: NodeRef::new("C:s1"),
+            op: ComputeOp::AtomicLoad {
+                source: NodeRef::new("M:g1"),
+                order: MemoryOrder::Acquire,
+                type_ref: TypeRef::Id { node: NodeRef::new("T:a1") },
+            },
+        };
+        let contract = ContractDef {
+            id: NodeRef::new("V:e1"),
+            target: NodeRef::new("K:f1"),
+            clauses: vec![ContractClause::Pre {
+                formula: Formula::Comparison {
+                    left: Expr::FieldAccess {
+                        node: NodeRef::new("C:s1"),
+                        fields: vec!["val".into()],
+                    },
+                    op: CmpOp::Eq,
+                    right: Expr::IntLit { value: -1 },
+                },
+            }],
+            trust: None,
+        };
+
+        let program = make_program_with_types(
+            vec![contract],
+            vec![compute],
+            vec![u8_type],
+        );
+        let results = prove_contracts(&program, &ProverConfig::default());
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, ProofStatus::Disproven);
+    }
+
+    #[test]
+    fn test_builtin_type_constraint() {
+        // C:s1.val >= 0 where C:s1 has builtin type "u32"
+        let compute = ComputeDef {
+            id: NodeRef::new("C:s1"),
+            op: ComputeOp::AtomicLoad {
+                source: NodeRef::new("M:g1"),
+                order: MemoryOrder::Acquire,
+                type_ref: TypeRef::Builtin { name: "u32".into() },
+            },
+        };
+        let contract = ContractDef {
+            id: NodeRef::new("V:e1"),
+            target: NodeRef::new("K:f1"),
+            clauses: vec![ContractClause::Pre {
+                formula: Formula::Comparison {
+                    left: Expr::FieldAccess {
+                        node: NodeRef::new("C:s1"),
+                        fields: vec!["val".into()],
+                    },
+                    op: CmpOp::Gte,
+                    right: Expr::IntLit { value: 0 },
+                },
+            }],
+            trust: None,
+        };
+
+        let program = make_program(vec![contract], vec![compute]);
+        let results = prove_contracts(&program, &ProverConfig::default());
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, ProofStatus::Proven);
+    }
+
+    #[test]
+    fn test_struct_array_length_constraint() {
+        // state.length <= 800 where state_type is a struct with an array max_length 800
+        let pos_type = TypeDef {
+            id: NodeRef::new("T:a1"),
+            body: TypeBody::Integer { bits: 32, signed: true },
+        };
+        let array_type = TypeDef {
+            id: NodeRef::new("T:a2"),
+            body: TypeBody::Array {
+                element: TypeRef::Id { node: NodeRef::new("T:a1") },
+                max_length: 800,
+                constraint: None,
+            },
+        };
+        let state_type = TypeDef {
+            id: NodeRef::new("T:a3"),
+            body: TypeBody::Struct {
+                fields: vec![
+                    StructField {
+                        name: "snake".into(),
+                        type_ref: TypeRef::Id { node: NodeRef::new("T:a2") },
+                    },
+                    StructField {
+                        name: "length".into(),
+                        type_ref: TypeRef::Id { node: NodeRef::new("T:a1") },
+                    },
+                ],
+                layout: Layout::Optimal,
+            },
+        };
+        let loop_control = ControlDef {
+            id: NodeRef::new("K:f_loop"),
+            op: ControlOp::Loop {
+                condition: NodeRef::new("C:c1"),
+                body: NodeRef::new("K:f2"),
+                state: NodeRef::new("M:g1"),
+                state_type: TypeRef::Id { node: NodeRef::new("T:a3") },
+            },
+        };
+        let contract = ContractDef {
+            id: NodeRef::new("V:e1"),
+            target: NodeRef::new("K:f_loop"),
+            clauses: vec![ContractClause::Invariant {
+                formula: Formula::Comparison {
+                    left: Expr::FieldAccess {
+                        node: NodeRef::new("state"),
+                        fields: vec!["length".into()],
+                    },
+                    op: CmpOp::Lte,
+                    right: Expr::IntLit { value: 800 },
+                },
+            }],
+            trust: None,
+        };
+
+        let program = make_program_full(
+            vec![contract],
+            vec![],
+            vec![pos_type, array_type, state_type],
+            vec![loop_control],
+        );
+        let results = prove_contracts(&program, &ProverConfig::default());
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].status, ProofStatus::Proven);
+    }
+
+    #[test]
+    fn test_assume_clause_as_axiom() {
+        // Assume: result >= 0, then Post: result >= 0 → PROVEN
+        let contract = ContractDef {
+            id: NodeRef::new("V:e1"),
+            target: NodeRef::new("E:d1"),
+            clauses: vec![
+                ContractClause::Assume {
+                    formula: Formula::Comparison {
+                        left: Expr::Result,
+                        op: CmpOp::Gte,
+                        right: Expr::IntLit { value: 0 },
+                    },
+                },
+                ContractClause::Post {
+                    formula: Formula::Comparison {
+                        left: Expr::Result,
+                        op: CmpOp::Gte,
+                        right: Expr::IntLit { value: 0 },
+                    },
+                },
+            ],
+            trust: None,
+        };
+
+        let program = make_program(vec![contract], vec![]);
+        let results = prove_contracts(&program, &ProverConfig::default());
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].status, ProofStatus::Assumed);
+        assert_eq!(results[1].status, ProofStatus::Proven);
+    }
+
+    #[test]
+    fn test_assume_constrains_symbolic_result() {
+        // Assume: result >= 0 AND result <= 100, then Post: result <= 200 → PROVEN
+        let contract = ContractDef {
+            id: NodeRef::new("V:e1"),
+            target: NodeRef::new("E:d1"),
+            clauses: vec![
+                ContractClause::Assume {
+                    formula: Formula::And {
+                        left: Box::new(Formula::Comparison {
+                            left: Expr::Result,
+                            op: CmpOp::Gte,
+                            right: Expr::IntLit { value: 0 },
+                        }),
+                        right: Box::new(Formula::Comparison {
+                            left: Expr::Result,
+                            op: CmpOp::Lte,
+                            right: Expr::IntLit { value: 100 },
+                        }),
+                    },
+                },
+                ContractClause::Post {
+                    formula: Formula::Comparison {
+                        left: Expr::Result,
+                        op: CmpOp::Lte,
+                        right: Expr::IntLit { value: 200 },
+                    },
+                },
+            ],
+            trust: None,
+        };
+
+        let program = make_program(vec![contract], vec![]);
+        let results = prove_contracts(&program, &ProverConfig::default());
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].status, ProofStatus::Assumed);
+        assert_eq!(results[1].status, ProofStatus::Proven);
     }
 }
