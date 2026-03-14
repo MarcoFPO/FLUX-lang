@@ -16,3 +16,11 @@ clap = { version = "4", features = ["derive"] }
 rand = "0.8"
 reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+assert_cmd = "2"
+
+[[bench]]
+name = "pipeline_bench"
+harness = false
