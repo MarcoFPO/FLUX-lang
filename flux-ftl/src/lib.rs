@@ -4,6 +4,7 @@ pub mod compiler;
 pub mod error;
 pub mod evolution;
 pub mod feedback;
+pub mod llm;
 pub mod optimizer;
 pub mod parser;
 pub mod prover;
