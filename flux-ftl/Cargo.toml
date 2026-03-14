@@ -3,6 +3,12 @@ name = "flux-ftl"
 version = "1.0.0"
 edition = "2024"
 description = "FTL (FLUX Text Language) Parser — Text to AST for the FLUX computation substrate"
+license = "MIT"
+repository = "https://github.com/MarcoFPO/FLUX-lang"
+homepage = "https://github.com/MarcoFPO/FLUX-lang"
+keywords = ["flux", "ftl", "compiler", "formal-verification", "llm"]
+categories = ["compilers", "development-tools"]
+exclude = ["testdata/", "tests/", "benches/", "scripts/"]
 
 [dependencies]
 pest = "2.7"
