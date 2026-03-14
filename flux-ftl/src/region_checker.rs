@@ -368,7 +368,7 @@ mod tests {
         RegionDef {
             id: NodeRef::new(id),
             lifetime,
-            parent: parent.map(|p| NodeRef::new(p)),
+            parent: parent.map(NodeRef::new),
         }
     }
 
