@@ -212,6 +212,7 @@ fn fold_constants(program: &Program) -> FoldResult {
 
     FoldResult {
         program: Program {
+            imports: program.imports.clone(),
             computes: new_computes,
             types: program.types.clone(),
             regions: program.regions.clone(),
@@ -295,6 +296,7 @@ fn remove_identities(program: &Program) -> IdentityResult {
 
     IdentityResult {
         program: Program {
+            imports: program.imports.clone(),
             computes: new_computes,
             types: program.types.clone(),
             regions: program.regions.clone(),
@@ -395,6 +397,7 @@ fn eliminate_dead_nodes(program: &Program) -> Program {
     let reachable = collect_reachable(program);
 
     Program {
+        imports: program.imports.clone(),
         types: program
             .types
             .iter()
@@ -780,6 +783,7 @@ mod tests {
     /// Helper: create a minimal program with the given computes and entry.
     fn minimal_program(computes: Vec<ComputeDef>, entry: &str) -> Program {
         Program {
+            imports: vec![],
             types: vec![],
             regions: vec![],
             computes,

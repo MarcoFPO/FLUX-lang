@@ -476,6 +476,8 @@ pub enum Abi {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Program {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<String>,
     pub types: Vec<TypeDef>,
     pub regions: Vec<RegionDef>,
     pub computes: Vec<ComputeDef>,

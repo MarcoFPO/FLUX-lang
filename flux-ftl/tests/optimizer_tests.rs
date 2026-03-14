@@ -13,6 +13,7 @@ use flux_ftl::parser::parse_ftl;
 
 fn program_with_computes(computes: Vec<ComputeDef>, entry: &str) -> Program {
     Program {
+        imports: vec![],
         types: vec![],
         regions: vec![],
         computes,

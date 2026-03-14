@@ -352,6 +352,7 @@ mod tests {
     /// Helper: build a minimal Program with given regions and no other nodes.
     fn program_with_regions(regions: Vec<RegionDef>) -> Program {
         Program {
+            imports: Vec::new(),
             types: Vec::new(),
             regions,
             computes: Vec::new(),

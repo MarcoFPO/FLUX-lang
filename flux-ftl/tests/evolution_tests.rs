@@ -85,6 +85,7 @@ fn make_test_program() -> Program {
     };
 
     Program {
+        imports: vec![],
         types: vec![t1],
         regions: vec![],
         computes: vec![c1, c2, c3],
@@ -192,6 +193,7 @@ fn make_complex_program() -> Program {
     };
 
     Program {
+        imports: vec![],
         types: vec![t1],
         regions: vec![],
         computes: vec![c1, c2, c3, c4, c5],
@@ -449,6 +451,7 @@ fn test_mutation_on_empty_program() {
     };
     let mut pool = GraphPool::new(config);
     let empty = Program {
+        imports: vec![],
         types: vec![],
         regions: vec![],
         computes: vec![],

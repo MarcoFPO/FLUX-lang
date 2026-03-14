@@ -24,6 +24,7 @@ pub fn parse_ftl(input: &str) -> ParseResult {
 }
 
 fn parse_program(pairs: pest::iterators::Pairs<Rule>) -> Result<Program, ParseError> {
+    let mut imports = Vec::new();
     let mut types = Vec::new();
     let mut regions = Vec::new();
     let mut computes = Vec::new();
@@ -37,25 +38,34 @@ fn parse_program(pairs: pest::iterators::Pairs<Rule>) -> Result<Program, ParseEr
     for pair in pairs {
         if pair.as_rule() == Rule::program {
             for inner in pair.into_inner() {
-                if inner.as_rule() == Rule::statement {
-                    let stmt = inner.into_inner().next().unwrap();
-                    match stmt.as_rule() {
-                        Rule::type_def => types.push(parse_type_def(stmt)?),
-                        Rule::region_def => regions.push(parse_region_def(stmt)?),
-                        Rule::compute_def => computes.push(parse_compute_def(stmt)?),
-                        Rule::effect_def => effects.push(parse_effect_def(stmt)?),
-                        Rule::control_def => controls.push(parse_control_def(stmt)?),
-                        Rule::contract_def => {
-                            contracts.push(parse_contract_def(stmt)?);
-                        }
-                        Rule::memory_def => memories.push(parse_memory_def(stmt)?),
-                        Rule::extern_def => externs.push(parse_extern_def(stmt)?),
-                        Rule::entry_def => {
-                            let node = stmt.into_inner().next().unwrap();
-                            entry = Some(NodeRef::new(node.as_str()));
-                        }
-                        _ => {}
+                match inner.as_rule() {
+                    Rule::import_stmt => {
+                        let path_str = inner.into_inner().next().unwrap().as_str();
+                        // Strip surrounding quotes from string_lit
+                        let path = path_str[1..path_str.len() - 1].to_string();
+                        imports.push(path);
                     }
+                    Rule::statement => {
+                        let stmt = inner.into_inner().next().unwrap();
+                        match stmt.as_rule() {
+                            Rule::type_def => types.push(parse_type_def(stmt)?),
+                            Rule::region_def => regions.push(parse_region_def(stmt)?),
+                            Rule::compute_def => computes.push(parse_compute_def(stmt)?),
+                            Rule::effect_def => effects.push(parse_effect_def(stmt)?),
+                            Rule::control_def => controls.push(parse_control_def(stmt)?),
+                            Rule::contract_def => {
+                                contracts.push(parse_contract_def(stmt)?);
+                            }
+                            Rule::memory_def => memories.push(parse_memory_def(stmt)?),
+                            Rule::extern_def => externs.push(parse_extern_def(stmt)?),
+                            Rule::entry_def => {
+                                let node = stmt.into_inner().next().unwrap();
+                                entry = Some(NodeRef::new(node.as_str()));
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -64,6 +74,7 @@ fn parse_program(pairs: pest::iterators::Pairs<Rule>) -> Result<Program, ParseEr
     let entry = entry.unwrap_or_else(|| NodeRef::new("K:main"));
 
     Ok(Program {
+        imports,
         types,
         regions,
         computes,

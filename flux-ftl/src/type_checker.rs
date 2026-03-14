@@ -1189,6 +1189,7 @@ mod tests {
     /// Helper: minimal valid program with no nodes.
     fn empty_program() -> Program {
         Program {
+            imports: vec![],
             types: vec![],
             regions: vec![],
             computes: vec![],

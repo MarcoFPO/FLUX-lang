@@ -105,6 +105,7 @@ fn concurrency_predicate_unknown() {
 
 fn make_bmc_program(contracts: Vec<ContractDef>, computes: Vec<ComputeDef>) -> Program {
     Program {
+        imports: vec![],
         types: vec![],
         regions: vec![],
         computes,

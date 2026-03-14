@@ -117,6 +117,31 @@ fn print_json(result: &FullResult) -> Result<(), String> {
 // Subcommand implementations
 // ---------------------------------------------------------------------------
 
+/// Parse input and resolve imports if the input comes from a file.
+/// Returns the merged Program or prints errors and returns None.
+fn parse_and_resolve(input: &str, file: &str) -> Option<flux_ftl::ast::Program> {
+    let parse_result = flux_ftl::parser::parse_ftl(input);
+    let ast = match parse_result.status {
+        flux_ftl::error::Status::Ok => parse_result.ast?,
+        flux_ftl::error::Status::Error => return None,
+    };
+
+    if file != "-" && !ast.imports.is_empty() {
+        let path = std::path::Path::new(file);
+        match pipeline::resolve_imports(&ast, path) {
+            Ok(merged) => Some(merged),
+            Err(errs) => {
+                for e in &errs {
+                    eprintln!("error: {}", e);
+                }
+                None
+            }
+        }
+    } else {
+        Some(ast)
+    }
+}
+
 fn cmd_check(file: &str, bmc: bool, bmc_depth: u32) -> ExitCode {
     let input = match read_input(file) {
         Ok(s) => s,
@@ -125,6 +150,34 @@ fn cmd_check(file: &str, bmc: bool, bmc_depth: u32) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+
+    // Try to parse and resolve imports for file-based input
+    if file != "-"
+        && let Some(merged) = parse_and_resolve(&input, file)
+    {
+        let bmc_config = if bmc {
+            Some(BmcConfig {
+                max_depth: bmc_depth,
+                ..BmcConfig::default()
+            })
+        } else {
+            None
+        };
+
+        let result = pipeline::run_check_program_with_bmc(merged, bmc_config);
+        let exit = match result.status {
+            FullStatus::Ok => ExitCode::SUCCESS,
+            FullStatus::ValidationFail | FullStatus::ProofFail => ExitCode::from(1),
+            FullStatus::ParseError => ExitCode::from(1),
+        };
+
+        if let Err(e) = print_json(&result) {
+            eprintln!("error: {}", e);
+            return ExitCode::from(2);
+        }
+
+        return exit;
+    }
 
     let bmc_config = if bmc {
         Some(BmcConfig {
@@ -230,7 +283,17 @@ fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, target_str: &str, 
         None
     };
 
-    let result = pipeline::run_check_with_bmc(&input, bmc_config);
+    // Try import resolution for file-based input
+    let result = if file != "-" {
+        if let Some(merged) = parse_and_resolve(&input, file) {
+            pipeline::run_check_program_with_bmc(merged, bmc_config)
+        } else {
+            pipeline::run_check_with_bmc(&input, bmc_config)
+        }
+    } else {
+        pipeline::run_check_with_bmc(&input, bmc_config)
+    };
+
     if result.status != FullStatus::Ok {
         if let Err(e) = print_json(&result) {
             eprintln!("error: {}", e);

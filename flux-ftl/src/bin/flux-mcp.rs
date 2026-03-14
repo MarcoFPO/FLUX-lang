@@ -143,11 +143,12 @@ fn build_tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "flux_check".to_string(),
-            description: "Parse, validate, type-check, region-check, and prove contracts for FTL source code. Returns structured JSON with parse_errors, validation_errors, proof_results, and LLM feedback with repair suggestions.".to_string(),
+            description: "Parse, validate, type-check, region-check, and prove contracts for FTL source code. Returns structured JSON with parse_errors, validation_errors, proof_results, and LLM feedback with repair suggestions. Supports multi-file programs via import resolution when base_path is provided.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "ftl_source": { "type": "string", "description": "FTL source code to check" },
+                    "base_path": { "type": "string", "description": "File path of the FTL source, used for resolving imports. If omitted, imports are not resolved." },
                     "bmc": { "type": "boolean", "description": "Enable Bounded Model Checking as Z3 fallback", "default": false },
                     "bmc_depth": { "type": "integer", "description": "BMC unrolling depth", "default": 10 }
                 },
@@ -293,6 +294,7 @@ fn handle_flux_check(stdout: &std::io::Stdout, id: Value, args: &Value) {
         }
     };
 
+    let base_path = args.get("base_path").and_then(|v| v.as_str());
     let bmc = args.get("bmc").and_then(|v| v.as_bool()).unwrap_or(false);
     let bmc_depth = args.get("bmc_depth").and_then(|v| v.as_u64()).unwrap_or(10) as u32;
 
@@ -305,7 +307,36 @@ fn handle_flux_check(stdout: &std::io::Stdout, id: Value, args: &Value) {
         None
     };
 
-    let result = pipeline::run_check_with_bmc(ftl_source, bmc_config);
+    // Try import resolution when base_path is provided
+    let result = if let Some(bp) = base_path {
+        let parse_result = flux_ftl::parser::parse_ftl(ftl_source);
+        match parse_result.status {
+            flux_ftl::error::Status::Ok => {
+                if let Some(ast) = parse_result.ast {
+                    if !ast.imports.is_empty() {
+                        let path = std::path::Path::new(bp);
+                        match pipeline::resolve_imports(&ast, path) {
+                            Ok(merged) => pipeline::run_check_program_with_bmc(merged, bmc_config),
+                            Err(errs) => {
+                                send_tool_error(stdout, id, &format!("Import resolution failed: {}", errs.join("; ")));
+                                return;
+                            }
+                        }
+                    } else {
+                        pipeline::run_check_program_with_bmc(ast, bmc_config)
+                    }
+                } else {
+                    pipeline::run_check_with_bmc(ftl_source, bmc_config)
+                }
+            }
+            flux_ftl::error::Status::Error => {
+                pipeline::run_check_with_bmc(ftl_source, bmc_config)
+            }
+        }
+    } else {
+        pipeline::run_check_with_bmc(ftl_source, bmc_config)
+    };
+
     let json = match pipeline::result_to_json(&result) {
         Ok(j) => j,
         Err(e) => {

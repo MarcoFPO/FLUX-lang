@@ -2,8 +2,12 @@
 // pipeline.rs — Shared check/compile pipeline used by CLI and MCP server
 // ---------------------------------------------------------------------------
 
+use std::collections::HashSet;
+use std::path::Path;
+
 use serde::Serialize;
 
+use crate::ast::Program;
 use crate::compiler::{self, CompileMetadata};
 use crate::error::Status;
 use crate::feedback::{self, LlmFeedback, ValidationError as FeedbackValidationError};
@@ -99,6 +103,17 @@ pub fn run_check_with_bmc(input: &str, bmc_config: Option<BmcConfig>) -> FullRes
         }
     };
 
+    run_check_program_with_bmc(ast, bmc_config)
+}
+
+/// Run the full check pipeline on an already-parsed Program (e.g. after import
+/// resolution).
+pub fn run_check_program(ast: Program) -> FullResult {
+    run_check_program_with_bmc(ast, None)
+}
+
+/// Run the full check pipeline on an already-parsed Program with optional BMC.
+pub fn run_check_program_with_bmc(ast: Program, bmc_config: Option<BmcConfig>) -> FullResult {
     let mut validation_errors = Vec::new();
 
     // Phase 1: Structural validation
@@ -205,6 +220,138 @@ pub fn run_check_with_bmc(input: &str, bmc_config: Option<BmcConfig>) -> FullRes
         compile_error,
         feedback: Some(fb),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Import resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve all imports in a parsed program, merging imported nodes into the
+/// main program.  Returns errors for circular imports, missing files, and
+/// duplicate node IDs across modules.
+pub fn resolve_imports(program: &Program, base_path: &Path) -> Result<Program, Vec<String>> {
+    let mut visited: HashSet<String> = HashSet::new();
+    let canonical = base_path
+        .canonicalize()
+        .map_err(|e| vec![format!("cannot canonicalize base path: {}", e)])?;
+    let canonical_str = canonical.to_string_lossy().to_string();
+    visited.insert(canonical_str);
+
+    let base_dir = canonical
+        .parent()
+        .ok_or_else(|| vec!["base path has no parent directory".to_string()])?;
+
+    resolve_imports_recursive(program, base_dir, &mut visited)
+}
+
+fn resolve_imports_recursive(
+    program: &Program,
+    base_dir: &Path,
+    visited: &mut HashSet<String>,
+) -> Result<Program, Vec<String>> {
+    let mut merged = program.clone();
+    // Clear imports in the merged result — they have been resolved
+    merged.imports = Vec::new();
+
+    for import_path in &program.imports {
+        let full_path = base_dir.join(import_path);
+        let canonical = full_path
+            .canonicalize()
+            .map_err(|e| vec![format!("import '{}': {}", import_path, e)])?;
+        let canonical_str = canonical.to_string_lossy().to_string();
+
+        // Check circular imports
+        if visited.contains(&canonical_str) {
+            return Err(vec![format!(
+                "circular import detected: '{}'",
+                import_path
+            )]);
+        }
+        visited.insert(canonical_str);
+
+        // Read and parse the imported file
+        let source = std::fs::read_to_string(&full_path)
+            .map_err(|e| vec![format!("import '{}': {}", import_path, e)])?;
+
+        let parse_result = parse_ftl(&source);
+        let imported = match parse_result.status {
+            Status::Ok => match parse_result.ast {
+                Some(ast) => ast,
+                None => return Err(vec![format!("import '{}': no AST produced", import_path)]),
+            },
+            Status::Error => {
+                let msgs: Vec<String> = parse_result
+                    .errors
+                    .iter()
+                    .map(|e| format!("import '{}' line {}: {}", import_path, e.line, e.message))
+                    .collect();
+                return Err(msgs);
+            }
+        };
+
+        // Recursively resolve imports in the imported module
+        let import_dir = full_path
+            .parent()
+            .ok_or_else(|| vec![format!("import '{}': no parent directory", import_path)])?;
+        let resolved = resolve_imports_recursive(&imported, import_dir, visited)?;
+
+        // Check for duplicate node IDs before merging
+        let mut errors = Vec::new();
+        check_duplicate_ids(&merged, &resolved, import_path, &mut errors);
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+
+        // Merge all nodes from the resolved import into our program
+        merged.types.extend(resolved.types);
+        merged.regions.extend(resolved.regions);
+        merged.computes.extend(resolved.computes);
+        merged.effects.extend(resolved.effects);
+        merged.controls.extend(resolved.controls);
+        merged.contracts.extend(resolved.contracts);
+        merged.memories.extend(resolved.memories);
+        merged.externs.extend(resolved.externs);
+    }
+
+    Ok(merged)
+}
+
+/// Check for duplicate node IDs between the main program and an import.
+fn check_duplicate_ids(
+    main: &Program,
+    imported: &Program,
+    import_path: &str,
+    errors: &mut Vec<String>,
+) {
+    let mut existing: HashSet<String> = HashSet::new();
+    for t in &main.types { existing.insert(t.id.0.clone()); }
+    for r in &main.regions { existing.insert(r.id.0.clone()); }
+    for c in &main.computes { existing.insert(c.id.0.clone()); }
+    for e in &main.effects { existing.insert(e.id.0.clone()); }
+    for k in &main.controls { existing.insert(k.id.0.clone()); }
+    for v in &main.contracts { existing.insert(v.id.0.clone()); }
+    for m in &main.memories { existing.insert(m.id.0.clone()); }
+    for x in &main.externs { existing.insert(x.id.0.clone()); }
+
+    let check = |id: &str| {
+        if existing.contains(id) {
+            Some(format!(
+                "duplicate node ID '{}' from import '{}'",
+                id, import_path
+            ))
+        } else {
+            None
+        }
+    };
+
+    for t in &imported.types { if let Some(e) = check(&t.id.0) { errors.push(e); } }
+    for r in &imported.regions { if let Some(e) = check(&r.id.0) { errors.push(e); } }
+    for c in &imported.computes { if let Some(e) = check(&c.id.0) { errors.push(e); } }
+    for e_def in &imported.effects { if let Some(e) = check(&e_def.id.0) { errors.push(e); } }
+    for k in &imported.controls { if let Some(e) = check(&k.id.0) { errors.push(e); } }
+    for v in &imported.contracts { if let Some(e) = check(&v.id.0) { errors.push(e); } }
+    for m in &imported.memories { if let Some(e) = check(&m.id.0) { errors.push(e); } }
+    for x in &imported.externs { if let Some(e) = check(&x.id.0) { errors.push(e); } }
 }
 
 /// Serialize a FullResult to JSON string.
