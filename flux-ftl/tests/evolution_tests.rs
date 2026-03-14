@@ -558,6 +558,7 @@ fn test_fitness_calculation() {
         clause_kind: "post".to_string(),
         status: ProofStatus::Proven,
         counterexample: None,
+        counterexample_model: None,
     }]);
 
     let fitness = calculate_fitness(&individual);
@@ -577,6 +578,7 @@ fn test_fitness_partial_correctness() {
             clause_kind: "post".to_string(),
             status: ProofStatus::Proven,
             counterexample: None,
+        counterexample_model: None,
         },
         ProofResult {
             contract_id: "V:v1".to_string(),
@@ -585,6 +587,7 @@ fn test_fitness_partial_correctness() {
             clause_kind: "post".to_string(),
             status: ProofStatus::Disproven,
             counterexample: Some("x=0".to_string()),
+        counterexample_model: None,
         },
     ]);
 
@@ -831,6 +834,7 @@ fn test_incubation() {
             clause_kind: "post".to_string(),
             status: ProofStatus::Disproven,
             counterexample: Some("counterexample".to_string()),
+        counterexample_model: None,
         }]);
     }
 
@@ -862,6 +866,7 @@ fn test_promote_from_incubation() {
         clause_kind: "post".to_string(),
         status: ProofStatus::Proven,
         counterexample: None,
+        counterexample_model: None,
     }]);
     incubated.lineage.push("initial".to_string());
     pool.incubation_mut().push(incubated);
@@ -898,6 +903,7 @@ fn test_incubation_limit() {
             clause_kind: "post".to_string(),
             status: ProofStatus::Disproven,
             counterexample: None,
+        counterexample_model: None,
         }]);
     }
 
@@ -1091,6 +1097,7 @@ fn test_individual_is_proven() {
         clause_kind: "post".to_string(),
         status: ProofStatus::Proven,
         counterexample: None,
+        counterexample_model: None,
     }]);
 
     assert!(ind.is_proven());
@@ -1110,6 +1117,7 @@ fn test_individual_has_failures() {
         clause_kind: "post".to_string(),
         status: ProofStatus::Disproven,
         counterexample: Some("x=0".to_string()),
+        counterexample_model: None,
     }]);
 
     assert!(ind.has_failures());
@@ -1127,6 +1135,7 @@ fn test_individual_unknown_is_failure() {
         clause_kind: "post".to_string(),
         status: ProofStatus::Unknown,
         counterexample: None,
+        counterexample_model: None,
     }]);
 
     assert!(ind.has_failures(), "Unknown should count as failure");

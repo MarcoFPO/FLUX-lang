@@ -19,6 +19,8 @@ pub struct ProofResult {
     pub status: ProofStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub counterexample: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub counterexample_model: Option<CounterexampleModel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -33,10 +35,29 @@ pub enum ProofStatus {
     BmcRefuted,
 }
 
+/// BMC search strategy for finding the right unrolling depth.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub enum BmcStrategy {
+    /// Unroll linearly from 1 to max_depth (original behavior).
+    #[default]
+    Linear,
+    /// Binary search: check max_depth/2, then narrow based on result.
+    Binary,
+    /// Start small, double on success until max_depth (logarithmic).
+    Adaptive,
+}
+
+/// Structured counterexample model: variable name to value pairs.
+pub type CounterexampleModel = Vec<(String, String)>;
+
+/// Result of proving a clause: (status, counterexample_string, structured_model).
+type ClauseResult = (ProofStatus, Option<String>, Option<CounterexampleModel>);
+
 #[derive(Debug, Clone)]
 pub struct BmcConfig {
     pub max_depth: u32,
     pub timeout_secs: u64,
+    pub strategy: BmcStrategy,
 }
 
 impl Default for BmcConfig {
@@ -44,6 +65,7 @@ impl Default for BmcConfig {
         Self {
             max_depth: 10,
             timeout_secs: 300,
+            strategy: BmcStrategy::default(),
         }
     }
 }
@@ -682,7 +704,66 @@ fn substitute_var_in_expr(expr: &Expr, var: &str, value: i64) -> Expr {
     }
 }
 
+/// Extract structured counterexample model from a Z3 model.
+/// Returns (variable_name, value) pairs parsed from the model's string representation.
+/// The Z3 model Display format uses lines like: `var_name -> value`
+fn extract_counterexample_model(model: &z3::Model) -> Vec<(String, String)> {
+    let model_str = format!("{}", model);
+    let mut pairs = Vec::new();
+    for line in model_str.lines() {
+        let line = line.trim();
+        if let Some(arrow_pos) = line.find(" -> ") {
+            let name = line[..arrow_pos].trim().to_string();
+            let value = line[arrow_pos + 4..].trim().to_string();
+            if !name.is_empty() && !value.is_empty() {
+                pairs.push((name, value));
+            }
+        }
+    }
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    pairs
+}
+
+/// Generate depths to check based on BMC strategy.
+fn bmc_strategy_depths(strategy: &BmcStrategy, max_depth: u32) -> Vec<u32> {
+    match strategy {
+        BmcStrategy::Linear => {
+            // Single check at max_depth (existing behavior)
+            vec![max_depth]
+        }
+        BmcStrategy::Binary => {
+            // Binary search: check at midpoints, converging toward max_depth
+            let mut depths = Vec::new();
+            let mut lo = 1u32;
+            while lo <= max_depth {
+                let mid = lo + (max_depth - lo) / 2;
+                depths.push(mid);
+                if mid == max_depth {
+                    break;
+                }
+                lo = mid + 1;
+            }
+            if depths.last() != Some(&max_depth) {
+                depths.push(max_depth);
+            }
+            depths
+        }
+        BmcStrategy::Adaptive => {
+            // Start at 1, double until max_depth
+            let mut depths = Vec::new();
+            let mut d = 1u32;
+            while d < max_depth {
+                depths.push(d);
+                d = d.saturating_mul(2);
+            }
+            depths.push(max_depth);
+            depths
+        }
+    }
+}
+
 /// BMC check for a single clause: unfold quantifiers and check with Z3.
+/// Uses the configured strategy to determine which depths to check.
 fn bmc_check_clause<'z>(
     z3_ctx: &'z Context,
     prover_ctx: &ProverContext,
@@ -691,53 +772,93 @@ fn bmc_check_clause<'z>(
     contract: &ContractDef,
     type_constraints: &[Bool<'z>],
     bmc_config: &BmcConfig,
-) -> (ProofStatus, Option<String>) {
+) -> ClauseResult {
     let formula = match clause {
         ContractClause::Pre { formula } => formula,
         ContractClause::Post { formula } => formula,
         ContractClause::Invariant { formula } => formula,
-        ContractClause::Assume { .. } => return (ProofStatus::Assumed, None),
+        ContractClause::Assume { .. } => return (ProofStatus::Assumed, None, None),
     };
 
-    let z3_formula = match translate_formula_bmc(z3_ctx, prover_ctx, formula, bmc_config.max_depth) {
-        Some(f) => f,
-        None => return (ProofStatus::Unknown, Some("BMC: untranslatable formula".into())),
-    };
-
-    let solver = Solver::new(z3_ctx);
     let timeout_ms = (bmc_config.timeout_secs * 1000) as u32;
-    solver.set_params(&{
-        let mut params = z3::Params::new(z3_ctx);
-        params.set_u32("timeout", timeout_ms);
-        params
-    });
-
-    for tc in type_constraints {
-        solver.assert(tc);
-    }
-
     let assume_axioms = collect_assume_axioms(z3_ctx, prover_ctx, &contract.clauses, clause_idx);
-    for axiom in &assume_axioms {
-        solver.assert(axiom);
+    let depths = bmc_strategy_depths(&bmc_config.strategy, bmc_config.max_depth);
+
+    for &depth in &depths {
+        let z3_formula = match translate_formula_bmc(z3_ctx, prover_ctx, formula, depth) {
+            Some(f) => f,
+            None => return (ProofStatus::Unknown, Some("BMC: untranslatable formula".into()), None),
+        };
+
+        let solver = Solver::new(z3_ctx);
+        solver.set_params(&{
+            let mut params = z3::Params::new(z3_ctx);
+            params.set_u32("timeout", timeout_ms);
+            params
+        });
+
+        for tc in type_constraints {
+            solver.assert(tc);
+        }
+        for axiom in &assume_axioms {
+            solver.assert(axiom);
+        }
+        solver.assert(&z3_formula.not());
+
+        match solver.check() {
+            SatResult::Unsat => {
+                if depth == bmc_config.max_depth {
+                    return (ProofStatus::BmcProven, None, None);
+                }
+                // Proven at lower depth, continue to max_depth for full coverage
+                continue;
+            }
+            SatResult::Sat => {
+                let (ce, model) = solver
+                    .get_model()
+                    .map(|m| {
+                        let ce_str = format!("{}", m);
+                        let model_pairs = extract_counterexample_model(&m);
+                        (
+                            if ce_str.is_empty() { None } else { Some(ce_str) },
+                            if model_pairs.is_empty() { None } else { Some(model_pairs) },
+                        )
+                    })
+                    .unwrap_or((None, None));
+                return (ProofStatus::BmcRefuted, ce, model);
+            }
+            SatResult::Unknown => {
+                if depth == bmc_config.max_depth {
+                    let reason = solver.get_reason_unknown().unwrap_or_default();
+                    return (ProofStatus::Unknown, Some(format!("BMC: {}", reason)), None);
+                }
+                continue;
+            }
+        }
     }
 
-    solver.assert(&z3_formula.not());
+    // Fallback: should not normally be reached since depths always ends with max_depth
+    (ProofStatus::Unknown, Some("BMC: no result".into()), None)
+}
 
-    match solver.check() {
-        SatResult::Unsat => (ProofStatus::BmcProven, None),
-        SatResult::Sat => {
-            let ce = solver
-                .get_model()
-                .map(|m| format!("{}", m))
-                .unwrap_or_default();
-            let ce = if ce.is_empty() { None } else { Some(ce) };
-            (ProofStatus::BmcRefuted, ce)
-        }
-        SatResult::Unknown => {
-            let reason = solver.get_reason_unknown().unwrap_or_default();
-            (ProofStatus::Unknown, Some(format!("BMC: {}", reason)))
+// ---------------------------------------------------------------------------
+// Invariant strengthening — add known const values as constraints
+// ---------------------------------------------------------------------------
+
+/// Collect known const values from the program context for invariant strengthening.
+fn collect_const_bounds<'z>(
+    z3_ctx: &'z Context,
+    prover_ctx: &ProverContext,
+) -> Vec<Bool<'z>> {
+    let mut bounds = Vec::new();
+    for (id, cdef) in &prover_ctx.consts {
+        if let ComputeOp::Const { value: Literal::Integer { value }, .. } = &cdef.op {
+            let var_name = format!("{}.val", id);
+            let z3_var = Int::new_const(z3_ctx, var_name.as_str());
+            bounds.push(z3_var._eq(&Int::from_i64(z3_ctx, *value)));
         }
     }
+    bounds
 }
 
 // ---------------------------------------------------------------------------
@@ -752,9 +873,9 @@ fn prove_clause<'z>(
     contract: &ContractDef,
     type_constraints: &[Bool<'z>],
     config: &ProverConfig,
-) -> (ProofStatus, Option<String>) {
+) -> ClauseResult {
     if let ContractClause::Assume { .. } = clause {
-        return (ProofStatus::Assumed, None);
+        return (ProofStatus::Assumed, None, None);
     }
 
     let formula = match clause {
@@ -766,7 +887,7 @@ fn prove_clause<'z>(
 
     let z3_formula = match translate_formula(z3_ctx, prover_ctx, formula) {
         Some(f) => f,
-        None => return (ProofStatus::Unknown, Some("untranslatable formula".into())),
+        None => return (ProofStatus::Unknown, Some("untranslatable formula".into()), None),
     };
 
     let solver = Solver::new(z3_ctx);
@@ -793,22 +914,77 @@ fn prove_clause<'z>(
     solver.assert(&z3_formula.not());
 
     match solver.check() {
-        SatResult::Unsat => (ProofStatus::Proven, None),
+        SatResult::Unsat => (ProofStatus::Proven, None, None),
         SatResult::Sat => {
-            let ce = solver
+            let (ce, model) = solver
                 .get_model()
-                .map(|m| format!("{}", m))
-                .unwrap_or_default();
-            let ce = if ce.is_empty() { None } else { Some(ce) };
-            (ProofStatus::Disproven, ce)
+                .map(|m| {
+                    let ce_str = format!("{}", m);
+                    let model_pairs = extract_counterexample_model(&m);
+                    (
+                        if ce_str.is_empty() { None } else { Some(ce_str) },
+                        if model_pairs.is_empty() { None } else { Some(model_pairs) },
+                    )
+                })
+                .unwrap_or((None, None));
+            (ProofStatus::Disproven, ce, model)
         }
         SatResult::Unknown => {
             let reason = solver.get_reason_unknown().unwrap_or_default();
-            let z3_result = if reason.contains("timeout") {
-                (ProofStatus::Timeout, Some(reason))
-            } else {
-                (ProofStatus::Unknown, Some(reason))
-            };
+            let z3_result: ClauseResult =
+                if reason.contains("timeout") {
+                    (ProofStatus::Timeout, Some(reason), None)
+                } else {
+                    (ProofStatus::Unknown, Some(reason), None)
+                };
+
+            // Invariant strengthening: for Invariant clauses with Unknown,
+            // try again with additional const bounds from program context
+            if z3_result.0 == ProofStatus::Unknown
+                && matches!(clause, ContractClause::Invariant { .. })
+            {
+                let const_bounds = collect_const_bounds(z3_ctx, prover_ctx);
+                if !const_bounds.is_empty() {
+                    let strengthened_solver = Solver::new(z3_ctx);
+                    strengthened_solver.set_params(&{
+                        let mut params = z3::Params::new(z3_ctx);
+                        params.set_u32("timeout", config.timeout_ms);
+                        params
+                    });
+                    for tc in type_constraints {
+                        strengthened_solver.assert(tc);
+                    }
+                    for axiom in &assume_axioms {
+                        strengthened_solver.assert(axiom);
+                    }
+                    for bound in &const_bounds {
+                        strengthened_solver.assert(bound);
+                    }
+                    if let Some(ref f) = translate_formula(z3_ctx, prover_ctx, formula) {
+                        strengthened_solver.assert(&f.not());
+                        match strengthened_solver.check() {
+                            SatResult::Unsat => return (ProofStatus::Proven, None, None),
+                            SatResult::Sat => {
+                                let (ce, model) = strengthened_solver
+                                    .get_model()
+                                    .map(|m| {
+                                        let ce_str = format!("{}", m);
+                                        let model_pairs = extract_counterexample_model(&m);
+                                        (
+                                            if ce_str.is_empty() { None } else { Some(ce_str) },
+                                            if model_pairs.is_empty() { None } else { Some(model_pairs) },
+                                        )
+                                    })
+                                    .unwrap_or((None, None));
+                                return (ProofStatus::Disproven, ce, model);
+                            }
+                            SatResult::Unknown => {
+                                // Still unknown, fall through to BMC
+                            }
+                        }
+                    }
+                }
+            }
 
             // BMC fallback: if Z3 returned Unknown and BMC is configured, try BMC
             if z3_result.0 == ProofStatus::Unknown
@@ -860,8 +1036,8 @@ pub fn prove_contracts(program: &Program, config: &ProverConfig) -> Vec<ProofRes
                 ContractClause::Assume { .. } => "assume",
             };
 
-            let (status, counterexample) = if is_extern {
-                (ProofStatus::Assumed, None)
+            let (status, counterexample, counterexample_model) = if is_extern {
+                (ProofStatus::Assumed, None, None)
             } else {
                 prove_clause(
                     &z3_ctx,
@@ -881,6 +1057,7 @@ pub fn prove_contracts(program: &Program, config: &ProverConfig) -> Vec<ProofRes
                 clause_kind: kind.to_string(),
                 status,
                 counterexample,
+                counterexample_model,
             });
         }
     }
