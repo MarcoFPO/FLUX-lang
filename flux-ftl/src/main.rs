@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use clap::ValueEnum;
 use serde::Serialize;
 
-use flux_ftl::codegen::{self, CodegenConfig, OptLevel, OutputFormat};
+use flux_ftl::codegen::{self, CodegenConfig, FluxTarget, OptLevel, OutputFormat};
 use flux_ftl::compiler::{self, CompileMetadata};
 use flux_ftl::error::Status;
 use flux_ftl::evolution::{self, EvolutionConfig, GraphPool};
@@ -50,10 +50,16 @@ enum Commands {
         output: Option<String>,
         #[arg(long, default_value = "2")]
         opt_level: u8,
+        /// Target architecture: x86_64, aarch64, riscv64, wasm32, host
+        #[arg(long, default_value = "host")]
+        target: String,
     },
     /// Emit LLVM IR for debugging
     Ir {
         file: String,
+        /// Target architecture: x86_64, aarch64, riscv64, wasm32, host
+        #[arg(long, default_value = "host")]
+        target: String,
     },
     /// Generate FTL from natural language using LLM
     Generate {
@@ -441,7 +447,14 @@ fn cmd_compile(file: &str, output: Option<&str>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn cmd_build(file: &str, output: Option<&str>, opt_level: u8) -> ExitCode {
+fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, target_str: &str) -> ExitCode {
+    let flux_target = match FluxTarget::parse(target_str) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return ExitCode::from(2);
+        }
+    };
     let input = match read_input(file) {
         Ok(s) => s,
         Err(e) => {
@@ -497,7 +510,8 @@ fn cmd_build(file: &str, output: Option<&str>, opt_level: u8) -> ExitCode {
     let config = CodegenConfig {
         opt_level: opt,
         output_format: OutputFormat::ObjectFile,
-        ..CodegenConfig::default()
+        target_triple: flux_target.resolved_triple(),
+        target: flux_target,
     };
 
     let cg_result = match codegen::codegen(optimized_ast, &config) {
@@ -557,7 +571,14 @@ fn cmd_build(file: &str, output: Option<&str>, opt_level: u8) -> ExitCode {
     }
 }
 
-fn cmd_ir(file: &str) -> ExitCode {
+fn cmd_ir(file: &str, target_str: &str) -> ExitCode {
+    let flux_target = match FluxTarget::parse(target_str) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return ExitCode::from(2);
+        }
+    };
     let input = match read_input(file) {
         Ok(s) => s,
         Err(e) => {
@@ -584,6 +605,8 @@ fn cmd_ir(file: &str) -> ExitCode {
 
     let config = CodegenConfig {
         output_format: OutputFormat::LlvmIr,
+        target_triple: flux_target.resolved_triple(),
+        target: flux_target,
         ..CodegenConfig::default()
     };
 
@@ -812,8 +835,9 @@ fn main() -> ExitCode {
             ref file,
             ref output,
             opt_level,
-        }) => cmd_build(file, output.as_deref(), opt_level),
-        Some(Commands::Ir { ref file }) => cmd_ir(file),
+            ref target,
+        }) => cmd_build(file, output.as_deref(), opt_level, target),
+        Some(Commands::Ir { ref file, ref target }) => cmd_ir(file, target),
         Some(Commands::Generate {
             ref requirement,
             ref requirement_type,
