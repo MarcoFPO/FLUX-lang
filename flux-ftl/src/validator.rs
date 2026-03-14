@@ -74,19 +74,24 @@ fn build_index(program: &Program, errors: &mut Vec<ValidationError>) -> HashMap<
 
     let mut insert = |id: &NodeRef, kind: NodeKind, errors: &mut Vec<ValidationError>| {
         let key = id.as_str().to_string();
-        if index.contains_key(&key) {
-            errors.push(ValidationError {
-                error_code: 1001,
-                node_id: key.clone(),
-                violation: "DUPLICATE_ID".to_string(),
-                message: format!("Node {} is defined more than once", key),
-                suggestion: Some(format!(
-                    "Rename one of the duplicate {} definitions to a unique ID",
-                    key
-                )),
-            });
-        } else {
-            index.insert(key, kind);
+        use std::collections::hash_map::Entry;
+        match index.entry(key) {
+            Entry::Occupied(e) => {
+                let key = e.key().clone();
+                errors.push(ValidationError {
+                    error_code: 1001,
+                    node_id: key.clone(),
+                    violation: "DUPLICATE_ID".to_string(),
+                    message: format!("Node {} is defined more than once", key),
+                    suggestion: Some(format!(
+                        "Rename one of the duplicate {} definitions to a unique ID",
+                        key
+                    )),
+                });
+            }
+            Entry::Vacant(e) => {
+                e.insert(kind);
+            }
         }
     };
 

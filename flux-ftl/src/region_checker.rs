@@ -96,12 +96,11 @@ fn build_region_index(program: &Program) -> HashMap<String, RegionInfo> {
                         }
                     }
                     Lifetime::Scoped => {
-                        if let Some(ref parent_id) = info.parent {
-                            if let Some(parent_info) = index.get(parent_id) {
-                                if let Some(parent_depth) = parent_info.depth {
-                                    return Some((id.clone(), parent_depth + 1));
-                                }
-                            }
+                        if let Some(ref parent_id) = info.parent
+                            && let Some(parent_info) = index.get(parent_id)
+                            && let Some(parent_depth) = parent_info.depth
+                        {
+                            return Some((id.clone(), parent_depth + 1));
                         }
                         // Scoped without parent (6004) or parent not yet resolved
                         // — cannot compute depth.
@@ -161,19 +160,19 @@ fn check_region_hierarchy(index: &HashMap<String, RegionInfo>, errors: &mut Vec<
         }
 
         // 6001: parent references a non-existent region.
-        if let Some(ref parent_id) = info.parent {
-            if !index.contains_key(parent_id) {
-                errors.push(RegionError {
-                    error_code: 6001,
-                    node_id: id.clone(),
-                    violation: "REGION_PARENT_NOT_FOUND".into(),
-                    message: format!(
-                        "Region {} references non-existent parent {}",
-                        id, parent_id
-                    ),
-                    suggestion: Some(format!("Define {} or fix the parent reference", parent_id)),
-                });
-            }
+        if let Some(ref parent_id) = info.parent
+            && !index.contains_key(parent_id)
+        {
+            errors.push(RegionError {
+                error_code: 6001,
+                node_id: id.clone(),
+                violation: "REGION_PARENT_NOT_FOUND".into(),
+                message: format!(
+                    "Region {} references non-existent parent {}",
+                    id, parent_id
+                ),
+                suggestion: Some(format!("Define {} or fix the parent reference", parent_id)),
+            });
         }
     }
 
@@ -319,27 +318,24 @@ fn check_region_escapes(
             let value_region = resolve_region(value.as_str());
 
             // Only check when both regions are known.
-            if let (Some(tr), Some(vr)) = (target_region, value_region) {
-                if let (Some(target_depth), Some(value_depth)) = (depth_of(tr), depth_of(vr)) {
-                    // If the value lives in a shorter-lived (deeper) region than
-                    // the target, data would escape when the value's region ends.
-                    if value_depth > target_depth {
-                        errors.push(RegionError {
-                            error_code: 6006,
-                            node_id: m.id.as_str().to_owned(),
-                            violation: "REGION_ESCAPE".into(),
-                            message: format!(
-                                "Store {} writes a value from region {} (depth {}) \
-                                 into target in region {} (depth {}) — \
-                                 data would escape the shorter-lived region",
-                                m.id, vr, value_depth, tr, target_depth
-                            ),
-                            suggestion: Some(
-                                "Move the value to the same or a longer-lived region".into(),
-                            ),
-                        });
-                    }
-                }
+            if let (Some(tr), Some(vr)) = (target_region, value_region)
+                && let (Some(target_depth), Some(value_depth)) = (depth_of(tr), depth_of(vr))
+                && value_depth > target_depth
+            {
+                errors.push(RegionError {
+                    error_code: 6006,
+                    node_id: m.id.as_str().to_owned(),
+                    violation: "REGION_ESCAPE".into(),
+                    message: format!(
+                        "Store {} writes a value from region {} (depth {}) \
+                         into target in region {} (depth {}) — \
+                         data would escape the shorter-lived region",
+                        m.id, vr, value_depth, tr, target_depth
+                    ),
+                    suggestion: Some(
+                        "Move the value to the same or a longer-lived region".into(),
+                    ),
+                });
             }
         }
     }

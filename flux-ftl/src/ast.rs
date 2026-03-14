@@ -55,18 +55,13 @@ pub enum Literal {
 // Layout — memory layout strategy for struct types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Layout {
+    #[default]
     Optimal,
     Packed,
     CAbi,
-}
-
-impl Default for Layout {
-    fn default() -> Self {
-        Self::Optimal
-    }
 }
 
 // ---------------------------------------------------------------------------

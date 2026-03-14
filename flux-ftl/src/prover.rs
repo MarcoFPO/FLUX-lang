@@ -218,8 +218,7 @@ fn collect_type_constraints<'z>(
         }
 
         // Case 2: "state.length" or "state.score" — resolve via loop state_type
-        if sym_name.starts_with("state.") {
-            let field_name = &sym_name["state.".len()..];
+        if let Some(field_name) = sym_name.strip_prefix("state.") {
             // Find the contract's target and look for a loop with state_type
             if let Some(state_type_ref) = find_loop_state_type(prover_ctx, contract)
                 && let Some(type_body) = resolve_type(prover_ctx, state_type_ref)
@@ -241,10 +240,10 @@ fn find_loop_state_type<'a>(
 ) -> Option<&'a TypeRef> {
     let target = contract.target.as_str();
     // Direct target is a K-Node loop
-    if let Some(kdef) = prover_ctx.controls.get(target) {
-        if let ControlOp::Loop { state_type, .. } = &kdef.op {
-            return Some(state_type);
-        }
+    if let Some(kdef) = prover_ctx.controls.get(target)
+        && let ControlOp::Loop { state_type, .. } = &kdef.op
+    {
+        return Some(state_type);
     }
     None
 }
@@ -312,13 +311,13 @@ fn add_struct_field_constraints<'z>(
         // in the same struct and constrain by max_length.
         if field_name == "length" || field_name == "len" {
             for sf in fields {
-                if let Some(type_body) = resolve_type(prover_ctx, &sf.type_ref) {
-                    if let TypeBody::Array { max_length, .. } = type_body {
-                        let z3_var = Int::new_const(z3_ctx, var_name);
-                        constraints.push(z3_var.ge(&Int::from_i64(z3_ctx, 0)));
-                        constraints.push(z3_var.le(&Int::from_i64(z3_ctx, *max_length as i64)));
-                        break;
-                    }
+                if let Some(type_body) = resolve_type(prover_ctx, &sf.type_ref)
+                    && let TypeBody::Array { max_length, .. } = type_body
+                {
+                    let z3_var = Int::new_const(z3_ctx, var_name);
+                    constraints.push(z3_var.ge(&Int::from_i64(z3_ctx, 0)));
+                    constraints.push(z3_var.le(&Int::from_i64(z3_ctx, *max_length as i64)));
+                    break;
                 }
             }
         }
@@ -337,10 +336,10 @@ fn collect_assume_axioms<'z>(
 ) -> Vec<Bool<'z>> {
     let mut axioms = Vec::new();
     for clause in &clauses[..current_idx] {
-        if let ContractClause::Assume { formula } = clause {
-            if let Some(z3_f) = translate_formula(z3_ctx, prover_ctx, formula) {
-                axioms.push(z3_f);
-            }
+        if let ContractClause::Assume { formula } = clause
+            && let Some(z3_f) = translate_formula(z3_ctx, prover_ctx, formula)
+        {
+            axioms.push(z3_f);
         }
     }
     axioms
@@ -531,11 +530,8 @@ fn prove_clause<'z>(
     type_constraints: &[Bool<'z>],
     config: &ProverConfig,
 ) -> (ProofStatus, Option<String>) {
-    match clause {
-        ContractClause::Assume { .. } => {
-            return (ProofStatus::Assumed, None);
-        }
-        _ => {}
+    if let ContractClause::Assume { .. } = clause {
+        return (ProofStatus::Assumed, None);
     }
 
     let formula = match clause {

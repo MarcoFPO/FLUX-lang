@@ -29,6 +29,8 @@ pub enum CompileError {
     IoError(io::Error),
     /// Invalid binary format.
     InvalidFormat(String),
+    /// A value exceeds the maximum representable size in the binary format.
+    Overflow(String),
 }
 
 impl fmt::Display for CompileError {
@@ -38,6 +40,7 @@ impl fmt::Display for CompileError {
             CompileError::SerializationError(msg) => write!(f, "serialization error: {}", msg),
             CompileError::IoError(e) => write!(f, "I/O error: {}", e),
             CompileError::InvalidFormat(msg) => write!(f, "invalid binary format: {}", msg),
+            CompileError::Overflow(msg) => write!(f, "overflow: {}", msg),
         }
     }
 }
@@ -550,24 +553,22 @@ pub fn compile(program: &Program) -> Result<CompiledGraph, CompileError> {
     let mut all_compiled: Vec<CompiledNode> = Vec::new();
     let mut seen_hashes: HashSet<[u8; 32]> = HashSet::new();
 
-    let reachable = collect_reachable(program);
-
     // Helper closure to build and dedup a node.
     let mut add_node = |id: &str, kind: NodeKind, data: Vec<u8>, ref_ids: &[String]| {
-        if let Some(&h) = hash_map.get(id) {
-            if seen_hashes.insert(h) {
-                let ref_hashes: Vec<[u8; 32]> = ref_ids
-                    .iter()
-                    .filter_map(|r| hash_map.get(r.as_str()).copied())
-                    .collect();
-                all_compiled.push(CompiledNode {
-                    hash: h,
-                    kind,
-                    original_id: id.to_string(),
-                    data,
-                    refs: ref_hashes,
-                });
-            }
+        if let Some(&h) = hash_map.get(id)
+            && seen_hashes.insert(h)
+        {
+            let ref_hashes: Vec<[u8; 32]> = ref_ids
+                .iter()
+                .filter_map(|r| hash_map.get(r.as_str()).copied())
+                .collect();
+            all_compiled.push(CompiledNode {
+                hash: h,
+                kind,
+                original_id: id.to_string(),
+                data,
+                refs: ref_hashes,
+            });
         }
     };
 
@@ -644,9 +645,10 @@ pub fn compile(program: &Program) -> Result<CompiledGraph, CompileError> {
 //
 // Format:
 //   Magic:       b"FLUX"   (4 bytes)
-//   Version:     1u32 LE   (4 bytes)
+//   Version:     2u32 LE   (4 bytes)
 //   Entry hash:  [u8; 32]
-//   Node count:  u32 LE
+//   Node count:  u32 LE    (unique nodes)
+//   Total nodes: u32 LE    (before deduplication)
 //   Per node:
 //     hash:      [u8; 32]
 //     kind:      u8
@@ -659,7 +661,7 @@ pub fn compile(program: &Program) -> Result<CompiledGraph, CompileError> {
 // ---------------------------------------------------------------------------
 
 const MAGIC: &[u8; 4] = b"FLUX";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 /// Write a compiled graph to a binary `.flux.bin` file.
 pub fn write_binary(graph: &CompiledGraph, path: &std::path::Path) -> Result<(), CompileError> {
@@ -672,8 +674,13 @@ pub fn write_binary(graph: &CompiledGraph, path: &std::path::Path) -> Result<(),
     // Entry hash
     file.write_all(&graph.entry_hash)?;
     // Node count
-    let count = graph.nodes.len() as u32;
+    let count = u32::try_from(graph.nodes.len())
+        .map_err(|_| CompileError::Overflow(format!("node count {} exceeds u32::MAX", graph.nodes.len())))?;
     file.write_all(&count.to_le_bytes())?;
+    // Total nodes (before deduplication)
+    let total_nodes = u32::try_from(graph.metadata.total_nodes)
+        .map_err(|_| CompileError::Overflow(format!("total_nodes {} exceeds u32::MAX", graph.metadata.total_nodes)))?;
+    file.write_all(&total_nodes.to_le_bytes())?;
 
     for node in &graph.nodes {
         // Hash
@@ -682,15 +689,18 @@ pub fn write_binary(graph: &CompiledGraph, path: &std::path::Path) -> Result<(),
         file.write_all(&[node.kind as u8])?;
         // ID
         let id_bytes = node.original_id.as_bytes();
-        let id_len = id_bytes.len() as u16;
+        let id_len = u16::try_from(id_bytes.len())
+            .map_err(|_| CompileError::Overflow(format!("node id length {} exceeds u16::MAX", id_bytes.len())))?;
         file.write_all(&id_len.to_le_bytes())?;
         file.write_all(id_bytes)?;
         // Data
-        let data_len = node.data.len() as u32;
+        let data_len = u32::try_from(node.data.len())
+            .map_err(|_| CompileError::Overflow(format!("node data length {} exceeds u32::MAX", node.data.len())))?;
         file.write_all(&data_len.to_le_bytes())?;
         file.write_all(&node.data)?;
         // Refs
-        let ref_count = node.refs.len() as u16;
+        let ref_count = u16::try_from(node.refs.len())
+            .map_err(|_| CompileError::Overflow(format!("ref count {} exceeds u16::MAX", node.refs.len())))?;
         file.write_all(&ref_count.to_le_bytes())?;
         for r in &node.refs {
             file.write_all(r)?;
@@ -743,6 +753,12 @@ pub fn read_binary(path: &std::path::Path) -> Result<CompiledGraph, CompileError
     let count_bytes = read_bytes(&mut pos, 4)?;
     let count = u32::from_le_bytes([
         count_bytes[0], count_bytes[1], count_bytes[2], count_bytes[3],
+    ]) as usize;
+
+    // Total nodes (before deduplication)
+    let total_bytes = read_bytes(&mut pos, 4)?;
+    let total_nodes = u32::from_le_bytes([
+        total_bytes[0], total_bytes[1], total_bytes[2], total_bytes[3],
     ]) as usize;
 
     let mut nodes = Vec::with_capacity(count);
@@ -801,7 +817,7 @@ pub fn read_binary(path: &std::path::Path) -> Result<CompiledGraph, CompileError
     Ok(CompiledGraph {
         entry_hash,
         metadata: GraphMetadata {
-            total_nodes: unique_nodes,
+            total_nodes,
             unique_nodes,
             entry_id,
         },

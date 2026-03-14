@@ -4,6 +4,9 @@ use pest_derive::Parser;
 use crate::ast::*;
 use crate::error::*;
 
+/// Parsed effect field data: (inputs, type_ref, effects, success, failure).
+type EffectFields = (Vec<NodeRef>, TypeRef, Vec<String>, Option<NodeRef>, Option<NodeRef>);
+
 #[derive(Parser)]
 #[grammar = "grammar.pest"]
 struct FtlParser;
@@ -32,36 +35,29 @@ fn parse_program(pairs: pest::iterators::Pairs<Rule>) -> Result<Program, ParseEr
     let mut entry = None;
 
     for pair in pairs {
-        match pair.as_rule() {
-            Rule::program => {
-                for inner in pair.into_inner() {
-                    match inner.as_rule() {
-                        Rule::statement => {
-                            let stmt = inner.into_inner().next().unwrap();
-                            match stmt.as_rule() {
-                                Rule::type_def => types.push(parse_type_def(stmt)?),
-                                Rule::region_def => regions.push(parse_region_def(stmt)?),
-                                Rule::compute_def => computes.push(parse_compute_def(stmt)?),
-                                Rule::effect_def => effects.push(parse_effect_def(stmt)?),
-                                Rule::control_def => controls.push(parse_control_def(stmt)?),
-                                Rule::contract_def => {
-                                    contracts.push(parse_contract_def(stmt)?);
-                                }
-                                Rule::memory_def => memories.push(parse_memory_def(stmt)?),
-                                Rule::extern_def => externs.push(parse_extern_def(stmt)?),
-                                Rule::entry_def => {
-                                    let node = stmt.into_inner().next().unwrap();
-                                    entry = Some(NodeRef::new(node.as_str()));
-                                }
-                                _ => {}
-                            }
+        if pair.as_rule() == Rule::program {
+            for inner in pair.into_inner() {
+                if inner.as_rule() == Rule::statement {
+                    let stmt = inner.into_inner().next().unwrap();
+                    match stmt.as_rule() {
+                        Rule::type_def => types.push(parse_type_def(stmt)?),
+                        Rule::region_def => regions.push(parse_region_def(stmt)?),
+                        Rule::compute_def => computes.push(parse_compute_def(stmt)?),
+                        Rule::effect_def => effects.push(parse_effect_def(stmt)?),
+                        Rule::control_def => controls.push(parse_control_def(stmt)?),
+                        Rule::contract_def => {
+                            contracts.push(parse_contract_def(stmt)?);
                         }
-                        Rule::EOI => {}
+                        Rule::memory_def => memories.push(parse_memory_def(stmt)?),
+                        Rule::extern_def => externs.push(parse_extern_def(stmt)?),
+                        Rule::entry_def => {
+                            let node = stmt.into_inner().next().unwrap();
+                            entry = Some(NodeRef::new(node.as_str()));
+                        }
                         _ => {}
                     }
                 }
             }
-            _ => {}
         }
     }
 
@@ -600,7 +596,7 @@ fn parse_effect_body(pair: pest::iterators::Pair<Rule>) -> Result<EffectOp, Pars
 
 fn parse_effect_field_pairs(
     pair: pest::iterators::Pair<Rule>,
-) -> Result<(Vec<NodeRef>, TypeRef, Vec<String>, Option<NodeRef>, Option<NodeRef>), ParseError> {
+) -> Result<EffectFields, ParseError> {
     let mut inputs = Vec::new();
     let mut type_ref = TypeRef::Builtin {
         name: "unit".to_string(),
@@ -1058,38 +1054,30 @@ fn parse_field_access_parts(parts: Vec<pest::iterators::Pair<Rule>>) -> (NodeRef
 // ---------------------------------------------------------------------------
 
 fn parse_formula_additive_as_expr(pair: pest::iterators::Pair<Rule>) -> Result<Expr, ParseError> {
-    let mut parts: Vec<pest::iterators::Pair<Rule>> = pair.into_inner().collect();
+    let parts: Vec<pest::iterators::Pair<Rule>> = pair.into_inner().collect();
     if parts.len() == 1 {
-        return parse_formula_multiplicative_as_expr(parts.remove(0));
+        return parse_formula_multiplicative_as_expr(parts.into_iter().next().unwrap());
     }
     // Alternating: multiplicative, op, multiplicative, op, multiplicative, ...
-    let mut result = parse_formula_multiplicative_as_expr(parts.remove(0))?;
-    let mut i = 0;
-    while i < parts.len() {
-        let op = match parts[i].as_str() {
+    let mut iter = parts.into_iter();
+    let mut result = parse_formula_multiplicative_as_expr(iter.next().unwrap())?;
+
+    while let Some(op_pair) = iter.next() {
+        let op = match op_pair.as_str() {
             "+" => ArithBinOp::Add,
             "-" => ArithBinOp::Sub,
             _ => ArithBinOp::Add,
         };
-        i += 1;
-        if i < parts.len() {
-            let right = parse_formula_multiplicative_as_expr(parts.remove(i))?;
-            // Remove the op too (it's now at position i-1... but we already moved past it)
-            // Actually, let me redo this with a proper loop
+        if let Some(rhs_pair) = iter.next() {
+            let right = parse_formula_multiplicative_as_expr(rhs_pair)?;
             result = Expr::BinOp {
                 left: Box::new(result),
                 op,
                 right: Box::new(right),
             };
         }
-        // After removing one element, adjust
-        break; // This approach is broken, let me redo
     }
 
-    // Better approach: collect into vec, process in pairs
-    // Already started with result from first element. Let me re-parse.
-    // Actually the issue is I already removed the first element.
-    // Let me restart with a different approach.
     Ok(result)
 }
 
