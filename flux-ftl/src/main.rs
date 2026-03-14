@@ -7,6 +7,7 @@ use serde::Serialize;
 use flux_ftl::codegen::{self, CodegenConfig, OptLevel, OutputFormat};
 use flux_ftl::compiler::{self, CompileMetadata};
 use flux_ftl::error::Status;
+use flux_ftl::evolution::{self, EvolutionConfig, GraphPool};
 use flux_ftl::feedback::{self, LlmFeedback, ValidationError as FeedbackValidationError};
 use flux_ftl::optimizer::{self, OptimizationConfig};
 use flux_ftl::parser::parse_ftl;
@@ -52,6 +53,26 @@ enum Commands {
     /// Emit LLVM IR for debugging
     Ir {
         file: String,
+    },
+    /// Evolve graph variants using a genetic algorithm
+    Evolve {
+        /// Input FTL file to use as base program
+        file: String,
+        /// Number of generations to run
+        #[arg(long, default_value = "50")]
+        generations: u32,
+        /// Population size
+        #[arg(long, default_value = "30")]
+        population: usize,
+        /// Mutation rate (0.0 - 1.0)
+        #[arg(long, default_value = "0.3")]
+        mutation_rate: f64,
+        /// Crossover rate (0.0 - 1.0)
+        #[arg(long, default_value = "0.5")]
+        crossover_rate: f64,
+        /// Random seed for reproducibility
+        #[arg(long)]
+        seed: Option<u64>,
     },
 }
 
@@ -553,6 +574,100 @@ fn cmd_ir(file: &str) -> ExitCode {
 }
 
 // ---------------------------------------------------------------------------
+// Evolve subcommand
+// ---------------------------------------------------------------------------
+
+fn cmd_evolve(
+    file: &str,
+    generations: u32,
+    population: usize,
+    mutation_rate: f64,
+    crossover_rate: f64,
+    seed: Option<u64>,
+) -> ExitCode {
+    let input = match read_input(file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+
+    let result = run_check(&input);
+    let ast = match &result.ast {
+        Some(a) => a,
+        None => {
+            eprintln!("error: failed to parse input FTL");
+            if let Err(e) = print_json(&result) {
+                eprintln!("error: {}", e);
+            }
+            return ExitCode::from(1);
+        }
+    };
+
+    let config = EvolutionConfig {
+        population_size: population,
+        mutation_rate,
+        crossover_rate,
+        max_generations: generations,
+        seed,
+        ..Default::default()
+    };
+
+    eprintln!(
+        "Evolution: population={}, generations={}, mutation_rate={}, crossover_rate={}",
+        population, generations, mutation_rate, crossover_rate,
+    );
+    if let Some(s) = seed {
+        eprintln!("  seed: {}", s);
+    }
+
+    let mut pool = GraphPool::new(config);
+    pool.seed_population(ast, population);
+
+    let evo_result = pool.run(generations);
+
+    eprintln!("\nEvolution complete:");
+    eprintln!("  generations run: {}", evo_result.generations_run);
+    eprintln!(
+        "  best fitness:    {:.4}",
+        evo_result.population_stats.best_fitness
+    );
+    eprintln!(
+        "  avg fitness:     {:.4}",
+        evo_result.population_stats.avg_fitness
+    );
+    eprintln!(
+        "  proven count:    {}",
+        evo_result.population_stats.proven_count
+    );
+    eprintln!(
+        "  incubated:       {}",
+        evo_result.population_stats.incubated_count
+    );
+    eprintln!(
+        "  best node count: {}",
+        evolution::count_nodes(&evo_result.best.program)
+    );
+    eprintln!(
+        "  best depth:      {}",
+        evolution::calculate_depth(&evo_result.best.program)
+    );
+
+    // Output the best program as JSON
+    match serde_json::to_string_pretty(&evo_result.best.program) {
+        Ok(json) => {
+            println!("{}", json);
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: JSON serialization: {}", e);
+            ExitCode::from(2)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -571,6 +686,14 @@ fn main() -> ExitCode {
             opt_level,
         }) => cmd_build(file, output.as_deref(), opt_level),
         Some(Commands::Ir { ref file }) => cmd_ir(file),
+        Some(Commands::Evolve {
+            ref file,
+            generations,
+            population,
+            mutation_rate,
+            crossover_rate,
+            seed,
+        }) => cmd_evolve(file, generations, population, mutation_rate, crossover_rate, seed),
         None => {
             // Backward compatible: stdin -> JSON
             cmd_check("-", &OutputFmt::Json)
