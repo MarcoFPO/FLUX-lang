@@ -16,7 +16,7 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libz3-dev llvm-14-dev libllvm14 libclang-14-dev
+        sudo apt-get install -y libz3-dev llvm-14-dev libllvm14 libclang-14-dev libpolly-14-dev
 
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
