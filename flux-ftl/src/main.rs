@@ -1,7 +1,6 @@
 use std::io::Read;
 use std::process::ExitCode;
 
-use clap::ValueEnum;
 use serde::Serialize;
 
 use flux_ftl::codegen::{self, CodegenConfig, FluxTarget, OptLevel, OutputFormat};
@@ -22,7 +21,7 @@ use flux_ftl::validator::validate;
 // ---------------------------------------------------------------------------
 
 #[derive(clap::Parser)]
-#[command(name = "flux-ftl", version, about = "FLUX Text Language Compiler")]
+#[command(name = "flux-ftl")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -30,100 +29,63 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Commands {
-    /// Parse, validate, prove, and generate feedback
     Check {
         #[arg(default_value = "-")]
         file: String,
-        #[arg(long, default_value = "json", value_enum)]
-        format: OutputFmt,
-        /// Enable Bounded Model Checking as Z3 fallback
         #[arg(long)]
         bmc: bool,
-        /// BMC unfolding depth (default: 10)
         #[arg(long, default_value = "10")]
         bmc_depth: u32,
     },
-    /// Check + compile to binary graph (.flux.bin)
     Compile {
         file: String,
         #[arg(short, long)]
         output: Option<String>,
     },
-    /// Check + compile + LLVM codegen -> executable
     Build {
         file: String,
         #[arg(short, long)]
         output: Option<String>,
         #[arg(long, default_value = "2")]
         opt_level: u8,
-        /// Target architecture: x86_64, aarch64, riscv64, wasm32, host
         #[arg(long, default_value = "host")]
         target: String,
-        /// Enable Bounded Model Checking as Z3 fallback
         #[arg(long)]
         bmc: bool,
-        /// BMC unfolding depth (default: 10)
         #[arg(long, default_value = "10")]
         bmc_depth: u32,
     },
-    /// Emit LLVM IR for debugging
     Ir {
         file: String,
-        /// Target architecture: x86_64, aarch64, riscv64, wasm32, host
         #[arg(long, default_value = "host")]
         target: String,
     },
-    /// Generate FTL from natural language using LLM
     Generate {
-        /// Natural language requirement
         requirement: String,
-
-        /// Requirement type: translate, optimize, invent, discover
         #[arg(long, default_value = "translate")]
         requirement_type: String,
-
-        /// LLM provider: anthropic, openai
         #[arg(long, default_value = "anthropic")]
         provider: String,
-
-        /// Model name (default depends on provider)
         #[arg(long)]
         model: Option<String>,
-
-        /// Max repair iterations
         #[arg(long, default_value = "5")]
         max_iterations: u32,
-
-        /// Output file for generated FTL (stdout if not set)
         #[arg(short, long)]
         output: Option<String>,
     },
-    /// Evolve graph variants using a genetic algorithm
     Evolve {
-        /// Input FTL file to use as base program
         file: String,
-        /// Number of generations to run
         #[arg(long, default_value = "50")]
         generations: u32,
-        /// Population size
         #[arg(long, default_value = "30")]
         population: usize,
-        /// Mutation rate (0.0 - 1.0)
         #[arg(long, default_value = "0.3")]
         mutation_rate: f64,
-        /// Crossover rate (0.0 - 1.0)
         #[arg(long, default_value = "0.5")]
         crossover_rate: f64,
-        /// Random seed for reproducibility
         #[arg(long)]
         seed: Option<u64>,
     },
-}
-
-#[derive(Debug, Clone, ValueEnum)]
-enum OutputFmt {
-    Json,
-    Text,
 }
 
 // ---------------------------------------------------------------------------
@@ -344,46 +306,11 @@ fn print_json(result: &FullResult) -> Result<(), String> {
     Ok(())
 }
 
-fn print_text(result: &FullResult) {
-    let ok = |b: bool| if b { "[PASS]" } else { "[FAIL]" };
-
-    let parse_ok = result.status != FullStatus::ParseError;
-    println!("Parse    {}", ok(parse_ok));
-
-    if !parse_ok {
-        for e in &result.parse_errors {
-            println!("  - {}", e.message);
-        }
-        return;
-    }
-
-    let validate_ok =
-        result.status != FullStatus::ValidationFail && result.validation_errors.is_empty();
-    println!("Validate {}", ok(validate_ok));
-    for e in &result.validation_errors {
-        println!("  - [{}] {}: {}", e.error_code, e.node_id, e.message);
-    }
-
-    let prove_ok = result.status != FullStatus::ProofFail;
-    println!("Prove    {}", ok(prove_ok));
-    for r in &result.proof_results {
-        if r.status == ProofStatus::Disproven {
-            println!("  - {} DISPROVEN", r.contract_id);
-        }
-    }
-
-    let compile_ok = result.compiled.is_some();
-    println!("Compile  {}", ok(compile_ok));
-    if let Some(err) = &result.compile_error {
-        println!("  - {}", err);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Subcommand implementations
 // ---------------------------------------------------------------------------
 
-fn cmd_check(file: &str, format: &OutputFmt, bmc: bool, bmc_depth: u32) -> ExitCode {
+fn cmd_check(file: &str, bmc: bool, bmc_depth: u32) -> ExitCode {
     let input = match read_input(file) {
         Ok(s) => s,
         Err(e) => {
@@ -408,14 +335,9 @@ fn cmd_check(file: &str, format: &OutputFmt, bmc: bool, bmc_depth: u32) -> ExitC
         FullStatus::ParseError => ExitCode::from(1),
     };
 
-    match format {
-        OutputFmt::Json => {
-            if let Err(e) = print_json(&result) {
-                eprintln!("error: {}", e);
-                return ExitCode::from(2);
-            }
-        }
-        OutputFmt::Text => print_text(&result),
+    if let Err(e) = print_json(&result) {
+        eprintln!("error: {}", e);
+        return ExitCode::from(2);
     }
 
     exit
@@ -864,7 +786,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Check { ref file, ref format, bmc, bmc_depth }) => cmd_check(file, format, bmc, bmc_depth),
+        Some(Commands::Check { ref file, bmc, bmc_depth }) => cmd_check(file, bmc, bmc_depth),
         Some(Commands::Compile { ref file, ref output }) => {
             cmd_compile(file, output.as_deref())
         }
@@ -902,7 +824,7 @@ fn main() -> ExitCode {
         }) => cmd_evolve(file, generations, population, mutation_rate, crossover_rate, seed),
         None => {
             // Backward compatible: stdin -> JSON
-            cmd_check("-", &OutputFmt::Json, false, 10)
+            cmd_check("-", false, 10)
         }
     }
 }
