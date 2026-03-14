@@ -83,7 +83,7 @@ fn mcp_initialize() {
     let result = &resp["result"];
     assert_eq!(result["protocolVersion"], "2024-11-05");
     assert_eq!(result["serverInfo"]["name"], "flux-ftl");
-    assert_eq!(result["serverInfo"]["version"], "1.0.0");
+    assert_eq!(result["serverInfo"]["version"], "2.0.0");
     assert!(result["capabilities"]["tools"].is_object());
 }
 
