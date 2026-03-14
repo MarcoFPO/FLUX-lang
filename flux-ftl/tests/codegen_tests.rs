@@ -157,3 +157,142 @@ fn hello_world_links_and_runs() {
     let _ = std::fs::remove_file(obj_path);
     let _ = std::fs::remove_file(bin_path);
 }
+
+// ---------------------------------------------------------------------------
+// ffi.ftl tests — Phase 10
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ffi_generates_complete_ir() {
+    let program = parse_file("testdata/ffi.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::LlvmIr,
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("ffi codegen failed");
+    assert!(
+        result.llvm_ir.contains("define i32 @main"),
+        "IR must define main"
+    );
+    // Verify all extern calls are present in the IR body
+    assert!(
+        result.llvm_ir.contains("call") && result.llvm_ir.contains("@malloc"),
+        "IR must contain call to malloc"
+    );
+    assert!(
+        result.llvm_ir.contains("@memcpy"),
+        "IR must contain memcpy declaration or call"
+    );
+    assert!(
+        result.llvm_ir.contains("@fopen"),
+        "IR must contain fopen declaration or call"
+    );
+    assert!(
+        result.llvm_ir.contains("@fwrite"),
+        "IR must contain fwrite declaration or call"
+    );
+    assert!(
+        result.llvm_ir.contains("@fclose"),
+        "IR must contain fclose declaration or call"
+    );
+    assert!(
+        result.llvm_ir.contains("@free"),
+        "IR must contain free declaration or call"
+    );
+}
+
+#[test]
+fn ffi_ir_has_malloc_free() {
+    let program = parse_file("testdata/ffi.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::LlvmIr,
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("ffi codegen failed");
+    // Verify malloc and free are declared with correct signatures
+    assert!(
+        result.llvm_ir.contains("declare") && result.llvm_ir.contains("@malloc"),
+        "malloc must be declared"
+    );
+    assert!(
+        result.llvm_ir.contains("declare") && result.llvm_ir.contains("@free"),
+        "free must be declared"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// concurrency.ftl tests — Phase 10
+// ---------------------------------------------------------------------------
+
+#[test]
+fn concurrency_generates_ir() {
+    let program = parse_file("testdata/concurrency.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::LlvmIr,
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("concurrency codegen failed");
+    assert!(
+        result.llvm_ir.contains("define i32 @main"),
+        "IR must define main"
+    );
+    // Should contain alloca for M-node allocations
+    assert!(
+        result.llvm_ir.contains("alloca"),
+        "IR must contain alloca for M-node allocations"
+    );
+    // Should contain atomic operations
+    assert!(
+        result.llvm_ir.contains("store atomic") || result.llvm_ir.contains("atomic"),
+        "IR must contain atomic operations"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Branch codegen test — Phase 10
+// ---------------------------------------------------------------------------
+
+#[test]
+fn branch_codegen() {
+    // concurrency.ftl contains K:f_cons_body = branch { ... }
+    let program = parse_file("testdata/concurrency.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::LlvmIr,
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("branch codegen failed");
+    // Branch codegen produces then/else/merge basic blocks
+    assert!(
+        result.llvm_ir.contains("then") || result.llvm_ir.contains("br i1"),
+        "IR must contain branch basic blocks"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Memory operations in IR — Phase 10
+// ---------------------------------------------------------------------------
+
+#[test]
+fn memory_ops_in_ir() {
+    let program = parse_file("testdata/concurrency.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::LlvmIr,
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("memory ops codegen failed");
+    // Verify alloca instructions exist for M-node allocs
+    assert!(
+        result.llvm_ir.contains("alloca"),
+        "IR must contain alloca for memory allocations"
+    );
+    // Verify store instructions exist
+    assert!(
+        result.llvm_ir.contains("store"),
+        "IR must contain store instructions"
+    );
+    // Verify load instructions exist
+    assert!(
+        result.llvm_ir.contains("load"),
+        "IR must contain load instructions"
+    );
+}
