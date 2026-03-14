@@ -7,12 +7,13 @@
 // MCP crates — only serde_json and standard I/O.
 //
 // Tools:
-//   flux_check   — Parse, validate, type-check, region-check, prove contracts
-//   flux_compile — Compile to content-addressed binary graph
-//   flux_build   — Full pipeline: check + compile + LLVM codegen + link
-//   flux_ir      — Generate LLVM IR from FTL source
-//   flux_evolve  — Evolve graph variants using a genetic algorithm
-//   flux_prove   — Formally prove V-Node contracts using Z3
+//   flux_check    — Parse, validate, type-check, region-check, prove contracts
+//   flux_compile  — Compile to content-addressed binary graph
+//   flux_build    — Full pipeline: check + compile + LLVM codegen + link
+//   flux_ir       — Generate LLVM IR from FTL source
+//   flux_evolve   — Evolve graph variants using a genetic algorithm
+//   flux_prove    — Formally prove V-Node contracts using Z3
+//   flux_generate — Generate FTL programs from natural language via LLM
 // ---------------------------------------------------------------------------
 
 use std::io::{BufRead, BufReader, Write};
@@ -23,6 +24,7 @@ use serde_json::Value;
 use flux_ftl::codegen::{self, CodegenConfig, FluxTarget, OptLevel, OutputFormat};
 use flux_ftl::compiler::{self, CompileMetadata};
 use flux_ftl::evolution::{self, EvolutionConfig, GraphPool};
+use flux_ftl::llm::{GenerateRequest, GenerationLoop, LlmConfig, LlmProvider, RequirementType};
 use flux_ftl::optimizer::{self, OptimizationConfig};
 use flux_ftl::pipeline::{self, FullStatus};
 use flux_ftl::prover::{prove_contracts, BmcConfig, ProverConfig};
@@ -217,6 +219,21 @@ fn build_tools() -> Vec<Tool> {
                 "required": ["ftl_source"]
             }),
         },
+        Tool {
+            name: "flux_generate".to_string(),
+            description: "Generate FTL programs from natural language requirements using an LLM. Iteratively generates, checks, and repairs FTL code until it passes all checks or max_iterations is reached. Returns a GenerationResult with the generated program, iterations, and final status.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "requirement": { "type": "string", "description": "Natural language description of the desired FTL program" },
+                    "requirement_type": { "type": "string", "description": "Type of requirement: translate, explain, optimize, refactor", "default": "translate" },
+                    "provider": { "type": "string", "description": "LLM provider: anthropic or openai", "default": "anthropic" },
+                    "model": { "type": "string", "description": "Model name override (optional, uses provider default if omitted)" },
+                    "max_iterations": { "type": "integer", "description": "Maximum number of generate-check-repair iterations", "default": 5 }
+                },
+                "required": ["requirement"]
+            }),
+        },
     ]
 }
 
@@ -256,6 +273,7 @@ fn handle_tools_call(stdout: &std::io::Stdout, id: Value, params: Option<Value>)
         "flux_ir" => handle_flux_ir(stdout, id, &args),
         "flux_evolve" => handle_flux_evolve(stdout, id, &args),
         "flux_prove" => handle_flux_prove(stdout, id, &args),
+        "flux_generate" => handle_flux_generate(stdout, id, &args),
         _ => send_tool_error(stdout, id, &format!("Unknown tool: {}", tool_name)),
     }
 }
@@ -611,6 +629,113 @@ fn handle_flux_prove(stdout: &std::io::Stdout, id: Value, args: &Value) {
     let proof_results = prove_contracts(ast, &prover_config);
     let json = serde_json::to_string(&proof_results)
         .unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e));
+
+    send_tool_result(stdout, id, &json);
+}
+
+// ---------------------------------------------------------------------------
+// Tool: flux_generate
+// ---------------------------------------------------------------------------
+
+fn handle_flux_generate(stdout: &std::io::Stdout, id: Value, args: &Value) {
+    let requirement = match args.get("requirement").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => {
+            send_tool_error(stdout, id, "Missing required argument: requirement");
+            return;
+        }
+    };
+
+    let requirement_type = args
+        .get("requirement_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("translate");
+    let provider = args
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("anthropic");
+    let model = args.get("model").and_then(|v| v.as_str());
+    let max_iterations = args
+        .get("max_iterations")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(5) as u32;
+
+    // Parse requirement type
+    let req_type = match RequirementType::from_str_loose(requirement_type) {
+        Ok(t) => t,
+        Err(e) => {
+            send_tool_error(stdout, id, &format!("Invalid requirement_type: {}", e));
+            return;
+        }
+    };
+
+    // Parse provider
+    let llm_provider = match LlmProvider::from_str_loose(provider) {
+        Ok(p) => p,
+        Err(e) => {
+            send_tool_error(stdout, id, &format!("Invalid provider: {}", e));
+            return;
+        }
+    };
+
+    // Build config from environment
+    let mut config = match LlmConfig::from_env(llm_provider, model.map(String::from)) {
+        Ok(c) => c,
+        Err(e) => {
+            send_tool_error(stdout, id, &format!("Configuration error: {}", e));
+            return;
+        }
+    };
+    config.max_iterations = max_iterations;
+
+    // Create generation loop
+    let gen_loop = match GenerationLoop::new(config) {
+        Ok(l) => l,
+        Err(e) => {
+            send_tool_error(
+                stdout,
+                id,
+                &format!("Failed to create generation loop: {}", e),
+            );
+            return;
+        }
+    };
+
+    let request = GenerateRequest {
+        requirement: requirement.to_string(),
+        requirement_type: req_type,
+        context: None,
+        examples: Vec::new(),
+    };
+
+    // Run async generation loop
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            send_tool_error(
+                stdout,
+                id,
+                &format!("Failed to create async runtime: {}", e),
+            );
+            return;
+        }
+    };
+
+    let result = match rt.block_on(gen_loop.generate(&request)) {
+        Ok(r) => r,
+        Err(e) => {
+            send_tool_error(stdout, id, &format!("Generation failed: {}", e));
+            return;
+        }
+    };
+
+    let json = match serde_json::to_string(&result) {
+        Ok(j) => j,
+        Err(e) => {
+            send_tool_error(stdout, id, &format!("Serialization error: {}", e));
+            return;
+        }
+    };
 
     send_tool_result(stdout, id, &json);
 }
