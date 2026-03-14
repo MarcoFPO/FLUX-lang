@@ -2,55 +2,94 @@
   "flux_version": 2,
   "target": "any",
   "entry_point": "main",
-
   "types": [
-    { "id": "t_u8",   "kind": "integer", "bits": 8,  "signed": false },
-    { "id": "t_u64",  "kind": "integer", "bits": 64, "signed": false },
-    { "id": "t_buf",  "kind": "array",   "element": "t_u8", "length": 12 },
-    { "id": "t_unit", "kind": "unit" }
+    {
+      "id": "t_u8",
+      "kind": "integer",
+      "bits": 8,
+      "signed": false
+    },
+    {
+      "id": "t_u64",
+      "kind": "integer",
+      "bits": 64,
+      "signed": false
+    },
+    {
+      "id": "t_buf",
+      "kind": "array",
+      "element": "t_u8",
+      "length": 12
+    },
+    {
+      "id": "t_unit",
+      "kind": "unit"
+    }
   ],
-
   "regions": [
-    { "id": "r_static", "lifetime": "static" },
-    { "id": "r_main",   "lifetime": "scoped", "scope": "main" }
+    {
+      "id": "r_static",
+      "lifetime": "static"
+    },
+    {
+      "id": "r_main",
+      "lifetime": "scoped",
+      "scope": "main"
+    }
   ],
-
   "nodes": [
     {
       "id": "n_msg",
       "kind": "C",
       "op": "CONST_BYTES",
-      "value": [72, 101, 108, 108, 111, 32, 87, 111, 114, 108, 100, 10],
+      "value": [
+        72,
+        101,
+        108,
+        108,
+        111,
+        32,
+        87,
+        111,
+        114,
+        108,
+        100,
+        10
+      ],
       "type_out": "t_buf",
-      "region": "r_static",
-      "debug": { "intent": "String-Literal 'Hello World\\n'" }
+      "region": "r_static"
     },
     {
       "id": "n_fd",
       "kind": "C",
       "op": "CONST",
       "value": 1,
-      "type_out": "t_u64",
-      "debug": { "intent": "File Descriptor stdout" }
+      "type_out": "t_u64"
     },
     {
       "id": "n_len",
       "kind": "C",
       "op": "CONST",
       "value": 12,
-      "type_out": "t_u64",
-      "debug": { "intent": "Nachrichtenlaenge in Bytes" }
+      "type_out": "t_u64"
     },
     {
       "id": "n_write",
       "kind": "E",
       "op": "SYSCALL_WRITE",
-      "inputs": ["n_fd", "n_msg", "n_len"],
+      "inputs": [
+        "n_fd",
+        "n_msg",
+        "n_len"
+      ],
       "type_out": "t_u64",
-      "effects": ["IO.stdout"],
+      "effects": [
+        "IO.stdout"
+      ],
       "fault_policy": "abort",
-      "faults": ["n_write_fault"],
-      "debug": { "intent": "Schreibe 'Hello World' nach stdout" }
+      "faults": [
+        "n_write_fault"
+      ]
     },
     {
       "id": "n_write_fault",
@@ -58,39 +97,38 @@
       "fault_type": "SYSCALL_ERROR",
       "source": "n_write",
       "recovery": "ABORT",
-      "exit_code": 1,
-      "debug": { "intent": "Bei Schreibfehler: Programm mit Code 1 beenden" }
+      "exit_code": 1
     },
     {
       "id": "n_exit_code",
       "kind": "C",
       "op": "CONST",
       "value": 0,
-      "type_out": "t_u64",
-      "debug": { "intent": "Exit-Code 0 (Erfolg)" }
+      "type_out": "t_u64"
     },
     {
       "id": "n_exit",
       "kind": "E",
       "op": "SYSCALL_EXIT",
-      "inputs": ["n_exit_code"],
+      "inputs": [
+        "n_exit_code"
+      ],
       "type_out": "t_unit",
-      "effects": ["PROCESS.exit"],
-      "debug": { "intent": "Programm beenden" }
+      "effects": [
+        "PROCESS.exit"
+      ]
     },
     {
       "id": "main",
       "kind": "K",
       "op": "SEQ",
-      "sequence": ["n_write", "n_exit"],
-      "type_out": "t_unit",
-      "debug": {
-        "intent": "Hauptprogramm: Schreiben dann Beenden",
-        "requirement": "Gib den Text 'Hello World' auf der Konsole aus"
-      }
+      "sequence": [
+        "n_write",
+        "n_exit"
+      ],
+      "type_out": "t_unit"
     }
   ],
-
   "contracts": [
     {
       "id": "v_fd_valid",

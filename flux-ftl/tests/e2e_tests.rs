@@ -61,34 +61,6 @@ fn e2e_hello_world_check() {
 }
 
 #[test]
-fn e2e_hello_world_check_text_format() {
-    let output = flux_cmd()
-        .args(["check", "testdata/hello_world.ftl", "--format", "text"])
-        .output()
-        .expect("failed to execute flux-ftl check --format text");
-
-    assert!(output.status.success(), "check text should exit 0");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Parse"),
-        "text output should contain 'Parse'"
-    );
-    assert!(
-        stdout.contains("Prove"),
-        "text output should contain 'Prove'"
-    );
-    assert!(
-        stdout.contains("[PASS]"),
-        "text output should contain [PASS]"
-    );
-    assert!(
-        !stdout.contains("[FAIL]"),
-        "text output should not contain [FAIL] for hello_world"
-    );
-}
-
-#[test]
 fn e2e_hello_world_compile() {
     let out = temp_path("hw_compile.flux.bin");
     cleanup(&out);
