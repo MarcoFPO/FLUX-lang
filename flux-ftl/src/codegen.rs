@@ -557,9 +557,53 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                         .into(),
                 )
             }
-            TypeBody::Struct { .. } | TypeBody::Variant { .. } | TypeBody::Fn { .. } => {
-                // For now, represent complex types as i64
-                Some(self.context.i64_type().into())
+            TypeBody::Struct { fields, .. } => {
+                let field_types: Vec<inkwell::types::BasicTypeEnum<'ctx>> = fields
+                    .iter()
+                    .filter_map(|f| self.type_ref_to_llvm(&f.type_ref))
+                    .collect();
+                if field_types.is_empty() {
+                    None // unit-like struct
+                } else {
+                    Some(self.context.struct_type(&field_types, false).into())
+                }
+            }
+            TypeBody::Variant { cases } => {
+                let tag_type = self.context.i32_type();
+                let max_payload = cases
+                    .iter()
+                    .filter_map(|c| self.type_ref_to_llvm(&c.payload))
+                    .max_by_key(|t| match t {
+                        inkwell::types::BasicTypeEnum::IntType(it) => {
+                            it.get_bit_width() as u64 / 8
+                        }
+                        inkwell::types::BasicTypeEnum::FloatType(ft) => {
+                            if ft.print_to_string().to_string().contains("double") {
+                                8
+                            } else {
+                                4
+                            }
+                        }
+                        inkwell::types::BasicTypeEnum::PointerType(_) => 8,
+                        _ => 8,
+                    });
+                match max_payload {
+                    Some(payload_ty) => Some(
+                        self.context
+                            .struct_type(&[tag_type.into(), payload_ty], false)
+                            .into(),
+                    ),
+                    None => Some(tag_type.into()), // enum with no payloads
+                }
+            }
+            TypeBody::Fn { .. } => {
+                // Function pointers are represented as i8*
+                Some(
+                    self.context
+                        .i8_type()
+                        .ptr_type(AddressSpace::default())
+                        .into(),
+                )
             }
         }
     }
@@ -597,12 +641,43 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                         TypeBody::Array { max_length, .. } => {
                             *max_length as u64 * 8
                         }
-                        _ => 8,
+                        TypeBody::Struct { fields, .. } => fields
+                            .iter()
+                            .map(|f| self.type_ref_byte_size(&f.type_ref))
+                            .sum(),
+                        TypeBody::Variant { cases } => {
+                            4 + cases
+                                .iter()
+                                .map(|c| self.type_ref_byte_size(&c.payload))
+                                .max()
+                                .unwrap_or(0)
+                        }
+                        TypeBody::Fn { .. } => 8, // pointer size
                     },
                     None => 8,
                 }
             }
         }
+    }
+
+    /// Get element size in bytes for a memory node. For array types, returns
+    /// the element type's size; otherwise returns the full type's size.
+    fn get_memory_element_size(&self, mem_node_id: &str) -> u64 {
+        for mem in &self.program.memories {
+            if mem.id.0 == mem_node_id
+                && let MemoryOp::Alloc { type_ref, .. } = &mem.op
+            {
+                if let TypeRef::Id { node } = type_ref
+                    && let Some(td) =
+                        self.program.types.iter().find(|t| t.id.0 == node.0)
+                    && let TypeBody::Array { element, .. } = &td.body
+                {
+                    return self.type_ref_byte_size(element);
+                }
+                return self.type_ref_byte_size(type_ref);
+            }
+        }
+        8 // fallback
     }
 
     // ------------------------------------------------------------------
@@ -751,7 +826,9 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                     .map_err(|e| CodegenError::EmitFailed(e.to_string()))?
                     .into_pointer_value();
 
-                let element_size = self.context.i64_type().const_int(8, false);
+                let element_size_bytes = self.get_memory_element_size(&target.0);
+                let element_size =
+                    self.context.i64_type().const_int(element_size_bytes, false);
                 let idx_i64 = self.int_to_i64(idx_val.into_int_value(), builder)?;
                 let byte_offset = builder
                     .build_int_mul(idx_i64, element_size, "byte_offset")
@@ -801,7 +878,9 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                     .map_err(|e| CodegenError::EmitFailed(e.to_string()))?
                     .into_pointer_value();
 
-                let element_size = self.context.i64_type().const_int(8, false);
+                let element_size_bytes = self.get_memory_element_size(&source.0);
+                let element_size =
+                    self.context.i64_type().const_int(element_size_bytes, false);
                 let idx_i64 = self.int_to_i64(idx_val.into_int_value(), builder)?;
                 let byte_offset = builder
                     .build_int_mul(idx_i64, element_size, "byte_offset")
