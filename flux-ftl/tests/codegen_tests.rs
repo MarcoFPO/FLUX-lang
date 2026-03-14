@@ -412,3 +412,111 @@ fn test_ir_host_target() {
         "IR must contain target triple directive"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Phase 22: Debug Info and LTO tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_debug_info_compiles() {
+    let program = parse_file("testdata/hello_world.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::LlvmIr,
+        emit_debug_info: true,
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("codegen with debug_info failed");
+    assert!(
+        result.llvm_ir.contains("define i32 @main"),
+        "IR must define main with debug info enabled"
+    );
+    // Debug info should add !dbg metadata or DICompileUnit
+    assert!(
+        result.llvm_ir.contains("!llvm.dbg") || result.llvm_ir.contains("DICompileUnit"),
+        "IR must contain debug info metadata"
+    );
+}
+
+#[test]
+fn test_debug_info_object_file() {
+    let program = parse_file("testdata/hello_world.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::ObjectFile,
+        emit_debug_info: true,
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("codegen with debug_info to object failed");
+    assert!(result.output_bytes.len() > 4, "object file too small");
+    assert_eq!(
+        &result.output_bytes[..4],
+        b"\x7fELF",
+        "output must be a valid ELF object file with debug info"
+    );
+}
+
+#[test]
+fn test_lto_compiles() {
+    let program = parse_file("testdata/hello_world.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::LlvmIr,
+        lto: true,
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("codegen with LTO failed");
+    assert!(
+        result.llvm_ir.contains("define i32 @main"),
+        "IR must define main with LTO enabled"
+    );
+}
+
+#[test]
+fn test_lto_object_file() {
+    let program = parse_file("testdata/hello_world.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::ObjectFile,
+        lto: true,
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("codegen with LTO to object failed");
+    assert!(result.output_bytes.len() > 4, "object file too small");
+    assert_eq!(
+        &result.output_bytes[..4],
+        b"\x7fELF",
+        "output must be a valid ELF object file with LTO"
+    );
+}
+
+#[test]
+fn test_bitcode_output() {
+    let program = parse_file("testdata/hello_world.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::Bitcode,
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("codegen to bitcode failed");
+    assert!(!result.output_bytes.is_empty(), "bitcode should not be empty");
+    // LLVM bitcode starts with 'BC' magic
+    assert!(
+        result.output_bytes.len() > 2
+            && (result.output_bytes[0] == b'B' && result.output_bytes[1] == b'C'),
+        "output must start with BC bitcode magic"
+    );
+}
+
+#[test]
+fn test_debug_info_and_lto_combined() {
+    let program = parse_file("testdata/hello_world.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::ObjectFile,
+        emit_debug_info: true,
+        lto: true,
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("codegen with debug_info+LTO failed");
+    assert!(result.output_bytes.len() > 4, "object file too small");
+    assert_eq!(
+        &result.output_bytes[..4],
+        b"\x7fELF",
+        "output must be a valid ELF with debug info and LTO"
+    );
+}
