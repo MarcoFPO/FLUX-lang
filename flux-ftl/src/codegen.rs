@@ -570,29 +570,20 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
             }
             TypeBody::Variant { cases } => {
                 let tag_type = self.context.i32_type();
-                let max_payload = cases
+                // Find the case with the largest payload using type_ref_byte_size
+                let max_case = cases
                     .iter()
-                    .filter_map(|c| self.type_ref_to_llvm(&c.payload))
-                    .max_by_key(|t| match t {
-                        inkwell::types::BasicTypeEnum::IntType(it) => {
-                            it.get_bit_width() as u64 / 8
-                        }
-                        inkwell::types::BasicTypeEnum::FloatType(ft) => {
-                            if ft.print_to_string().to_string().contains("double") {
-                                8
-                            } else {
-                                4
-                            }
-                        }
-                        inkwell::types::BasicTypeEnum::PointerType(_) => 8,
-                        _ => 8,
-                    });
-                match max_payload {
-                    Some(payload_ty) => Some(
-                        self.context
-                            .struct_type(&[tag_type.into(), payload_ty], false)
-                            .into(),
-                    ),
+                    .filter(|c| self.type_ref_to_llvm(&c.payload).is_some())
+                    .max_by_key(|c| self.type_ref_byte_size(&c.payload));
+                match max_case {
+                    Some(c) => {
+                        let payload_ty = self.type_ref_to_llvm(&c.payload).unwrap();
+                        Some(
+                            self.context
+                                .struct_type(&[tag_type.into(), payload_ty], false)
+                                .into(),
+                        )
+                    }
                     None => Some(tag_type.into()), // enum with no payloads
                 }
             }
@@ -638,9 +629,11 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                         TypeBody::Boolean => 1,
                         TypeBody::Unit => 0,
                         TypeBody::Opaque { size, .. } => *size as u64,
-                        TypeBody::Array { max_length, .. } => {
-                            *max_length as u64 * 8
-                        }
+                        TypeBody::Array {
+                            element,
+                            max_length,
+                            ..
+                        } => *max_length as u64 * self.type_ref_byte_size(element),
                         TypeBody::Struct { fields, .. } => fields
                             .iter()
                             .map(|f| self.type_ref_byte_size(&f.type_ref))
@@ -1109,12 +1102,38 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
         &self,
         builder: &inkwell::builder::Builder<'ctx>,
     ) -> Result<(), CodegenError> {
-        // Find all scoped regions
-        let scoped_region_ids: Vec<String> = self
+        // Only zero frame-scoped regions (innermost scoped regions whose parent
+        // is another scoped or game region). We identify these as scoped regions
+        // that have a parent which is also a scoped region. If no such nesting
+        // exists, pick scoped regions that are NOT the outermost scoped region.
+        let scoped_regions: Vec<&crate::ast::RegionDef> = self
             .program
             .regions
             .iter()
             .filter(|r| matches!(r.lifetime, crate::ast::Lifetime::Scoped))
+            .collect();
+
+        // Find innermost scoped regions: those whose parent is also scoped
+        let outer_scoped_ids: std::collections::HashSet<String> = scoped_regions
+            .iter()
+            .filter(|r| {
+                if let Some(parent) = &r.parent {
+                    // If parent is static, this is an outer scoped region
+                    self.program
+                        .regions
+                        .iter()
+                        .any(|p| p.id == *parent && matches!(p.lifetime, crate::ast::Lifetime::Static))
+                } else {
+                    true
+                }
+            })
+            .map(|r| r.id.0.clone())
+            .collect();
+
+        // Inner scoped regions = scoped but NOT outer
+        let scoped_region_ids: Vec<String> = scoped_regions
+            .iter()
+            .filter(|r| !outer_scoped_ids.contains(&r.id.0))
             .map(|r| r.id.0.clone())
             .collect();
 
@@ -2306,6 +2325,7 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                         "denom_is_zero",
                     )
                     .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                // If denominator is zero, return 0 (degenerate sine input)
                 let safe_denom = builder
                     .build_select(
                         is_zero,
@@ -2314,13 +2334,22 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                         "safe_denom",
                     )
                     .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
-                let result = builder
+                let div_result = builder
                     .build_int_signed_div(
                         numerator,
                         safe_denom.into_int_value(),
-                        "bhaskara_result",
+                        "bhaskara_div",
                     )
                     .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let result = builder
+                    .build_select(
+                        is_zero,
+                        BasicValueEnum::IntValue(i64_ty.const_int(0, false)),
+                        BasicValueEnum::IntValue(div_result),
+                        "bhaskara_result",
+                    )
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?
+                    .into_int_value();
 
                 // Truncate back to original width if needed
                 let result_truncated = if int_val.get_type().get_bit_width() < 64 {
