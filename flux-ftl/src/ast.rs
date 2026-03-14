@@ -1,10 +1,10 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // NodeRef — typed reference to any node in the graph ("T:a1", "C:c1", etc.)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodeRef(pub String);
 
 impl NodeRef {
@@ -31,7 +31,7 @@ impl std::fmt::Display for NodeRef {
 // TypeRef — either a node reference (T:a1) or a builtin name ("unit")
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TypeRef {
     Id { node: NodeRef },
@@ -42,7 +42,7 @@ pub enum TypeRef {
 // Literal values
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Literal {
     Integer { value: i64 },
@@ -55,7 +55,7 @@ pub enum Literal {
 // Layout — memory layout strategy for struct types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Layout {
     Optimal,
@@ -73,7 +73,7 @@ impl Default for Layout {
 // MemoryOrder — atomics ordering semantics
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryOrder {
     SeqCst,
@@ -87,7 +87,7 @@ pub enum MemoryOrder {
 // SyncMode — parallel branch synchronisation
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncMode {
     Barrier,
@@ -98,25 +98,25 @@ pub enum SyncMode {
 // T-Node — Type definitions
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeDef {
     pub id: NodeRef,
     pub body: TypeBody,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructField {
     pub name: String,
     pub type_ref: TypeRef,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VariantCase {
     pub tag: String,
     pub payload: TypeRef,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TypeBody {
     Integer {
@@ -157,7 +157,7 @@ pub enum TypeBody {
 // R-Node — Region definitions (memory lifetimes)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegionDef {
     pub id: NodeRef,
     pub lifetime: Lifetime,
@@ -165,7 +165,7 @@ pub struct RegionDef {
     pub parent: Option<NodeRef>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Lifetime {
     Static,
@@ -176,13 +176,13 @@ pub enum Lifetime {
 // C-Node — Compute definitions (pure computations)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComputeDef {
     pub id: NodeRef,
     pub op: ComputeOp,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ComputeOp {
     Const {
@@ -237,13 +237,13 @@ pub enum ComputeOp {
 // E-Node — Effect definitions (side effects: IO, syscalls, FFI calls)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EffectDef {
     pub id: NodeRef,
     pub op: EffectOp,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EffectOp {
     Syscall {
@@ -280,13 +280,13 @@ pub enum EffectOp {
 // K-Node — Control flow definitions
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlDef {
     pub id: NodeRef,
     pub op: ControlOp,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ControlOp {
     Seq {
@@ -315,7 +315,7 @@ pub enum ControlOp {
 // V-Node — Contract definitions (verification obligations)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContractDef {
     pub id: NodeRef,
     pub target: NodeRef,
@@ -324,7 +324,7 @@ pub struct ContractDef {
     pub trust: Option<TrustLevel>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ContractClause {
     Pre { formula: Formula },
@@ -333,7 +333,7 @@ pub enum ContractClause {
     Assume { formula: Formula },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustLevel {
     Proven,
@@ -344,7 +344,7 @@ pub enum TrustLevel {
 // Formula — SMT-LIB2-compatible contract language
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Formula {
     And {
@@ -382,7 +382,7 @@ pub enum Formula {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CmpOp {
     Eq,
@@ -397,7 +397,7 @@ pub enum CmpOp {
 // Expr — arithmetic / value expressions inside formulas
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Expr {
     IntLit { value: i64 },
@@ -414,7 +414,7 @@ pub enum Expr {
     EmptySet,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArithBinOp {
     Add,
@@ -428,13 +428,13 @@ pub enum ArithBinOp {
 // M-Node — Memory operations (region-bound)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryDef {
     pub id: NodeRef,
     pub op: MemoryOp,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MemoryOp {
     Alloc {
@@ -457,7 +457,7 @@ pub enum MemoryOp {
 // X-Node — Extern (FFI) declarations
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternDef {
     pub id: NodeRef,
     pub name: String,
@@ -467,7 +467,7 @@ pub struct ExternDef {
     pub effects: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Abi {
     C,
@@ -479,7 +479,7 @@ pub enum Abi {
 // Program — top-level container for the entire FTL graph
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Program {
     pub types: Vec<TypeDef>,
     pub regions: Vec<RegionDef>,
