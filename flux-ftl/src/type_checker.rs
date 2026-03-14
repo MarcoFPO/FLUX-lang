@@ -266,23 +266,23 @@ fn check_compute_types(
                 if is_comparison_op {
                     // Comparison ops: output must be Boolean, inputs must be
                     // compatible with each other (but NOT with the output type).
-                    if let Some(body) = resolve_type(type_ref, type_index) {
-                        if !matches!(body, TypeBody::Boolean) {
-                            errors.push(CheckError {
-                                error_code: 3001,
-                                node_id: node_id.clone(),
-                                violation: "TYPE_MISMATCH".into(),
-                                message: format!(
-                                    "Comparison op '{}' must return Boolean, but got {}",
-                                    opcode,
-                                    type_ref_label(type_ref, type_index),
-                                ),
-                                suggestion: Some(format!(
-                                    "Change the output type of {} to Boolean",
-                                    node_id,
-                                )),
-                            });
-                        }
+                    if let Some(body) = resolve_type(type_ref, type_index)
+                        && !matches!(body, TypeBody::Boolean)
+                    {
+                        errors.push(CheckError {
+                            error_code: 3001,
+                            node_id: node_id.clone(),
+                            violation: "TYPE_MISMATCH".into(),
+                            message: format!(
+                                "Comparison op '{}' must return Boolean, but got {}",
+                                opcode,
+                                type_ref_label(type_ref, type_index),
+                            ),
+                            suggestion: Some(format!(
+                                "Change the output type of {} to Boolean",
+                                node_id,
+                            )),
+                        });
                     }
                     // Check inputs are compatible with each other
                     let input_types: Vec<_> = inputs.iter()
@@ -321,32 +321,32 @@ fn check_compute_types(
                 } else {
                     // Non-comparison arith ops: check inputs match output type
                     for input in inputs {
-                        if let Some(input_tr) = compute_type_map.get(input.as_str()) {
-                            if !types_match(input_tr, type_ref) {
-                                // Allow compatible integer types (different widths)
-                                let compatible = matches!(
-                                    (resolve_type(input_tr, type_index), resolve_type(type_ref, type_index)),
-                                    (Some(a), Some(b)) if is_integer_type(a) && is_integer_type(b)
-                                );
-                                if !compatible {
-                                    errors.push(CheckError {
-                                        error_code: 3001,
-                                        node_id: node_id.clone(),
-                                        violation: "TYPE_MISMATCH".into(),
-                                        message: format!(
-                                            "Arith op '{}' expects all inputs of type {}, but input {} has type {}",
-                                            opcode,
-                                            type_ref_label(type_ref, type_index),
-                                            input,
-                                            type_ref_label(input_tr, type_index),
-                                        ),
-                                        suggestion: Some(format!(
-                                            "Ensure all inputs to {} have type {}",
-                                            node_id,
-                                            type_ref_label(type_ref, type_index),
-                                        )),
-                                    });
-                                }
+                        if let Some(input_tr) = compute_type_map.get(input.as_str())
+                            && !types_match(input_tr, type_ref)
+                        {
+                            // Allow compatible integer types (different widths)
+                            let compatible = matches!(
+                                (resolve_type(input_tr, type_index), resolve_type(type_ref, type_index)),
+                                (Some(a), Some(b)) if is_integer_type(a) && is_integer_type(b)
+                            );
+                            if !compatible {
+                                errors.push(CheckError {
+                                    error_code: 3001,
+                                    node_id: node_id.clone(),
+                                    violation: "TYPE_MISMATCH".into(),
+                                    message: format!(
+                                        "Arith op '{}' expects all inputs of type {}, but input {} has type {}",
+                                        opcode,
+                                        type_ref_label(type_ref, type_index),
+                                        input,
+                                        type_ref_label(input_tr, type_index),
+                                    ),
+                                    suggestion: Some(format!(
+                                        "Ensure all inputs to {} have type {}",
+                                        node_id,
+                                        type_ref_label(type_ref, type_index),
+                                    )),
+                                });
                             }
                         }
                     }
@@ -399,8 +399,8 @@ fn check_compute_types(
                     } else {
                         // Check each param type
                         for (i, (input, param_tr)) in inputs.iter().zip(params.iter()).enumerate() {
-                            if let Some(input_tr) = compute_type_map.get(input.as_str()) {
-                                if !types_match(input_tr, param_tr) {
+                            if let Some(input_tr) = compute_type_map.get(input.as_str())
+                                && !types_match(input_tr, param_tr) {
                                     errors.push(CheckError {
                                         error_code: 3005,
                                         node_id: node_id.clone(),
@@ -416,7 +416,6 @@ fn check_compute_types(
                                         suggestion: None,
                                     });
                                 }
-                            }
                         }
                     }
                     // Check result type matches declared type_ref
@@ -466,8 +465,8 @@ fn check_compute_types(
                 }
                 if name == "variant_tag" {
                     // variant_tag should produce an integer
-                    if let Some(body) = resolve_type(type_ref, type_index) {
-                        if !is_integer_type(body) {
+                    if let Some(body) = resolve_type(type_ref, type_index)
+                        && !is_integer_type(body) {
                             errors.push(CheckError {
                                 error_code: 3001,
                                 node_id: node_id.clone(),
@@ -480,7 +479,6 @@ fn check_compute_types(
                                 suggestion: Some("variant_tag result type should be an integer (e.g. u16)".into()),
                             });
                         }
-                    }
                 }
             }
 
@@ -506,10 +504,10 @@ fn check_struct_field_access(
     // The field name is typically encoded in the second input as a const string,
     // but since we don't have a direct way to extract it from the graph at this
     // level, we do a best-effort check: verify the first input is a struct type.
-    if let Some(first_input) = inputs.first() {
-        if let Some(input_tr) = compute_type_map.get(first_input.as_str()) {
-            if let Some(body) = resolve_type(input_tr, type_index) {
-                if !matches!(body, TypeBody::Struct { .. }) {
+    if let Some(first_input) = inputs.first()
+        && let Some(input_tr) = compute_type_map.get(first_input.as_str())
+            && let Some(body) = resolve_type(input_tr, type_index)
+                && !matches!(body, TypeBody::Struct { .. }) {
                     errors.push(CheckError {
                         error_code: 3002,
                         node_id: node_id.to_string(),
@@ -527,9 +525,6 @@ fn check_struct_field_access(
                         )),
                     });
                 }
-            }
-        }
-    }
 }
 
 /// Check that array index input is an integer type.
@@ -545,9 +540,9 @@ fn check_array_index(
     // The index (second input) must be integer.
     if inputs.len() >= 2 {
         let index_ref = &inputs[1];
-        if let Some(index_tr) = compute_type_map.get(index_ref.as_str()) {
-            if let Some(body) = resolve_type(index_tr, type_index) {
-                if !is_integer_type(body) {
+        if let Some(index_tr) = compute_type_map.get(index_ref.as_str())
+            && let Some(body) = resolve_type(index_tr, type_index)
+                && !is_integer_type(body) {
                     errors.push(CheckError {
                         error_code: 3004,
                         node_id: node_id.to_string(),
@@ -565,8 +560,6 @@ fn check_array_index(
                         )),
                     });
                 }
-            }
-        }
     }
 }
 
@@ -633,8 +626,8 @@ fn check_effect_nodes(program: &Program, errors: &mut Vec<CheckError>) {
                     }
 
                     // 4002: check that success/failure targets exist
-                    if let Some(s) = success {
-                        if !all_ids.contains(s.as_str()) {
+                    if let Some(s) = success
+                        && !all_ids.contains(s.as_str()) {
                             errors.push(CheckError {
                                 error_code: 4002,
                                 node_id: node_id.clone(),
@@ -649,9 +642,8 @@ fn check_effect_nodes(program: &Program, errors: &mut Vec<CheckError>) {
                                 )),
                             });
                         }
-                    }
-                    if let Some(f) = failure {
-                        if !all_ids.contains(f.as_str()) {
+                    if let Some(f) = failure
+                        && !all_ids.contains(f.as_str()) {
                             errors.push(CheckError {
                                 error_code: 4002,
                                 node_id: node_id.clone(),
@@ -666,7 +658,6 @@ fn check_effect_nodes(program: &Program, errors: &mut Vec<CheckError>) {
                                 )),
                             });
                         }
-                    }
                 }
 
                 // 4003: empty effects list (warning)
@@ -776,8 +767,8 @@ fn check_effect_nodes(program: &Program, errors: &mut Vec<CheckError>) {
                 }
 
                 // 4002: reachability
-                if let Some(s) = success {
-                    if !all_ids.contains(s.as_str()) {
+                if let Some(s) = success
+                    && !all_ids.contains(s.as_str()) {
                         errors.push(CheckError {
                             error_code: 4002,
                             node_id: node_id.clone(),
@@ -789,9 +780,8 @@ fn check_effect_nodes(program: &Program, errors: &mut Vec<CheckError>) {
                             suggestion: Some(format!("Define node {} or update the success path of {}", s, node_id)),
                         });
                     }
-                }
-                if let Some(f) = failure {
-                    if !all_ids.contains(f.as_str()) {
+                if let Some(f) = failure
+                    && !all_ids.contains(f.as_str()) {
                         errors.push(CheckError {
                             error_code: 4002,
                             node_id: node_id.clone(),
@@ -803,7 +793,6 @@ fn check_effect_nodes(program: &Program, errors: &mut Vec<CheckError>) {
                             suggestion: Some(format!("Define node {} or update the failure path of {}", f, node_id)),
                         });
                     }
-                }
 
                 // 4003: empty effects
                 if effects.is_empty() {
@@ -858,9 +847,9 @@ fn check_control_nodes(
                 }
 
                 // condition should be boolean-typed
-                if let Some(cond_tr) = compute_type_map.get(condition.as_str()) {
-                    if let Some(body) = resolve_type(cond_tr, type_index) {
-                        if !matches!(body, TypeBody::Boolean) {
+                if let Some(cond_tr) = compute_type_map.get(condition.as_str())
+                    && let Some(body) = resolve_type(cond_tr, type_index)
+                        && !matches!(body, TypeBody::Boolean) {
                             errors.push(CheckError {
                                 error_code: 3001,
                                 node_id: node_id.clone(),
@@ -874,21 +863,19 @@ fn check_control_nodes(
                                 suggestion: Some("Loop conditions must evaluate to a boolean".into()),
                             });
                         }
-                    }
-                }
             }
 
             // K:Branch — condition should be boolean; check exhaustiveness for variant
             ControlOp::Branch { condition, .. } => {
-                if let Some(cond_tr) = compute_type_map.get(condition.as_str()) {
-                    if let Some(body) = resolve_type(cond_tr, type_index) {
+                if let Some(cond_tr) = compute_type_map.get(condition.as_str())
+                    && let Some(body) = resolve_type(cond_tr, type_index) {
                         // If condition is a variant_tag result, we'd need to check
                         // exhaustiveness — but a simple Branch only has true/false,
                         // so variant exhaustiveness applies to multi-way branches.
                         // For a binary branch on boolean, this is fine.
                         // For a binary branch on a variant with >2 cases, it's non-exhaustive.
-                        if let TypeBody::Variant { cases } = body {
-                            if cases.len() > 2 {
+                        if let TypeBody::Variant { cases } = body
+                            && cases.len() > 2 {
                                 errors.push(CheckError {
                                     error_code: 3003,
                                     node_id: node_id.clone(),
@@ -904,9 +891,7 @@ fn check_control_nodes(
                                     )),
                                 });
                             }
-                        }
                     }
-                }
             }
 
             // K:Par — check branch count
@@ -955,7 +940,7 @@ fn check_memory_types(
                 if let Some(alloc_tr) = alloc_type_map.get(source.as_str()) {
                     let direct_match = types_match(alloc_tr, type_ref);
                     let element_match = match resolve_type(alloc_tr, type_index) {
-                        Some(TypeBody::Array { element, .. }) => types_match(&element, type_ref),
+                        Some(TypeBody::Array { element, .. }) => types_match(element, type_ref),
                         Some(TypeBody::Struct { .. }) => true, // struct field access
                         _ => false,
                     };
@@ -979,9 +964,9 @@ fn check_memory_types(
                     }
                 }
                 // Check that index is integer-typed
-                if let Some(index_tr) = compute_type_map.get(index.as_str()) {
-                    if let Some(body) = resolve_type(index_tr, type_index) {
-                        if !is_integer_type(body) {
+                if let Some(index_tr) = compute_type_map.get(index.as_str())
+                    && let Some(body) = resolve_type(index_tr, type_index)
+                        && !is_integer_type(body) {
                             errors.push(CheckError {
                                 error_code: 3004,
                                 node_id: node_id.clone(),
@@ -998,18 +983,16 @@ fn check_memory_types(
                                 )),
                             });
                         }
-                    }
-                }
             }
 
             MemoryOp::Store { target, value, index, .. } => {
                 // Check that stored value type matches the alloc type or its element type
-                if let Some(alloc_tr) = alloc_type_map.get(target.as_str()) {
-                    if let Some(value_tr) = compute_type_map.get(value.as_str()) {
+                if let Some(alloc_tr) = alloc_type_map.get(target.as_str())
+                    && let Some(value_tr) = compute_type_map.get(value.as_str()) {
                         let direct_match = types_match(value_tr, alloc_tr);
                         let element_match = match resolve_type(alloc_tr, type_index) {
                             Some(TypeBody::Array { element, .. }) => {
-                                types_match(value_tr, &element)
+                                types_match(value_tr, element)
                                 || is_zero_literal(value.as_str(), program)
                             }
                             Some(TypeBody::Struct { .. }) => true, // struct field write
@@ -1035,11 +1018,10 @@ fn check_memory_types(
                             });
                         }
                     }
-                }
                 // Check that index is integer-typed
-                if let Some(index_tr) = compute_type_map.get(index.as_str()) {
-                    if let Some(body) = resolve_type(index_tr, type_index) {
-                        if !is_integer_type(body) {
+                if let Some(index_tr) = compute_type_map.get(index.as_str())
+                    && let Some(body) = resolve_type(index_tr, type_index)
+                        && !is_integer_type(body) {
                             errors.push(CheckError {
                                 error_code: 3004,
                                 node_id: node_id.clone(),
@@ -1056,8 +1038,6 @@ fn check_memory_types(
                                 )),
                             });
                         }
-                    }
-                }
             }
 
             MemoryOp::Alloc { .. } => {}
@@ -1110,8 +1090,8 @@ fn check_extern_types(
                 } else {
                     // Check each parameter type
                     for (i, (input, param_tr)) in inputs.iter().zip(ext.params.iter()).enumerate() {
-                        if let Some(input_tr) = compute_type_map.get(input.as_str()) {
-                            if !types_match(input_tr, param_tr) {
+                        if let Some(input_tr) = compute_type_map.get(input.as_str())
+                            && !types_match(input_tr, param_tr) {
                                 // In FFI context, arrays implicitly decay to pointers.
                                 // An array type is compatible with an integer type that
                                 // represents a pointer (the array's base address).
@@ -1138,7 +1118,6 @@ fn check_extern_types(
                                     });
                                 }
                             }
-                        }
                     }
                 }
 

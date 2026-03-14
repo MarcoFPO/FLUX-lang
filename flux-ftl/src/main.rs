@@ -25,6 +25,8 @@ struct FullResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     compiled: Option<CompileMetadata>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    compile_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     feedback: Option<LlmFeedback>,
 }
 
@@ -68,6 +70,7 @@ fn main() {
                 validation_errors: Vec::new(),
                 proof_results: Vec::new(),
                 compiled: None,
+                compile_error: None,
                 feedback: Some(fb),
             };
             println!("{}", serde_json::to_string(&out).unwrap());
@@ -141,13 +144,13 @@ fn main() {
     };
 
     // Phase 5: Compilation (run unless fatal validation errors)
-    let compiled = if !has_fatal {
+    let (compiled, compile_error) = if !has_fatal {
         match compiler::compile(&ast) {
-            Ok(graph) => Some(CompileMetadata::from(&graph)),
-            Err(_) => None,
+            Ok(graph) => (Some(CompileMetadata::from(&graph)), None),
+            Err(e) => (None, Some(format!("{}", e))),
         }
     } else {
-        None
+        (None, None)
     };
 
     // Phase 7: Generate LLM feedback
@@ -175,6 +178,7 @@ fn main() {
         validation_errors,
         proof_results,
         compiled,
+        compile_error,
         feedback: Some(fb),
     };
 

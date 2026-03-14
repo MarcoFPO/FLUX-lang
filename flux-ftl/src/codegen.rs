@@ -441,11 +441,11 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
 
         // If the builder's current block has no terminator, add `ret i32 0`
         let current_block = builder.get_insert_block();
-        if let Some(block) = current_block {
-            if block.get_terminator().is_none() {
-                builder.build_return(Some(&i32_type.const_int(0, false)))
-                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
-            }
+        if let Some(block) = current_block
+            && block.get_terminator().is_none()
+        {
+            builder.build_return(Some(&i32_type.const_int(0, false)))
+                .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
         }
 
         Ok(())
@@ -638,7 +638,9 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
         let buf_val = self.resolve_pointer(&inputs[1].0, function, builder)?;
         let len_val = self.resolve_value(&inputs[2].0, function, builder)?;
 
-        let write_fn = self.functions["write"];
+        let write_fn = *self.functions.get("write").ok_or_else(|| {
+            CodegenError::UnresolvedNode("libc function 'write' not declared".to_string())
+        })?;
 
         // fd needs to be i32
         let fd_i32 = match fd_val {
@@ -687,7 +689,9 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
 
         let code_val = self.resolve_value(&inputs[0].0, function, builder)?;
 
-        let exit_fn = self.functions["_exit"];
+        let exit_fn = *self.functions.get("_exit").ok_or_else(|| {
+            CodegenError::UnresolvedNode("libc function '_exit' not declared".to_string())
+        })?;
 
         // code needs to be i32
         let code_i32 = match code_val {
