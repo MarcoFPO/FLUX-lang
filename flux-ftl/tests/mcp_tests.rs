@@ -210,3 +210,40 @@ fn mcp_multiple_requests() {
     assert_eq!(resp1["id"], 1);
     assert_eq!(resp2["id"], 2);
 }
+
+#[test]
+fn mcp_invalid_json() {
+    let (stdout, _) = send_request("this is not json\n");
+    let first_line = stdout.lines().next().expect("should get error response");
+    let resp: serde_json::Value = serde_json::from_str(first_line).expect("valid JSON error");
+    assert_eq!(resp["error"]["code"], -32700);
+}
+
+#[test]
+fn mcp_notification_no_response() {
+    // Notifications (no id field) should produce no response
+    let notif = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
+    let input = format!("{}\n{}\n", init, notif);
+    let (stdout, _) = send_request(&input);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "notification should not produce a response");
+}
+
+#[test]
+fn mcp_flux_evolve_valid() {
+    let ftl = std::fs::read_to_string("testdata/hello_world.ftl").expect("read testdata");
+
+    let resp = send_jsonrpc("tools/call", Some(serde_json::json!({
+        "name": "flux_evolve",
+        "arguments": { "ftl_source": ftl, "generations": 2, "population": 3, "seed": 42 }
+    })));
+
+    assert!(resp["error"].is_null());
+    let content = &resp["result"]["content"];
+    let text = content[0]["text"].as_str().expect("text content");
+    let evolve_result: serde_json::Value = serde_json::from_str(text).expect("valid JSON");
+    assert!(evolve_result["generations_run"].is_number());
+    assert!(evolve_result["best_fitness"].is_number());
+    assert!(evolve_result["best_program"].is_object());
+}
