@@ -25,6 +25,7 @@ use inkwell::AddressSpace;
 use inkwell::OptimizationLevel;
 
 use crate::ast::*;
+use crate::optimizer;
 
 // ---------------------------------------------------------------------------
 // Public configuration types
@@ -136,6 +137,20 @@ pub fn codegen(program: &Program, config: &CodegenConfig) -> Result<CodegenResul
     let context = Context::create();
     let mut generator = CodeGenerator::new(&context, program, config)?;
     generator.emit_program()?;
+
+    // Run LLVM optimization passes on the main function if opt_level > 0
+    let llvm_opt_level = match config.opt_level {
+        OptLevel::None => 0u8,
+        OptLevel::Less => 1,
+        OptLevel::Default => 2,
+        OptLevel::Aggressive => 3,
+    };
+    if llvm_opt_level > 0
+        && let Some(main_fn) = generator.module.get_function("main")
+    {
+        optimizer::optimize_llvm_function(&generator.module, main_fn, llvm_opt_level);
+    }
+
     generator.finish()
 }
 
