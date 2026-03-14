@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libz3-dev llvm-14-dev libllvm14 libclang-14-dev
+
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
+    - name: Cache cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          flux-ftl/target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('flux-ftl/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Build
+      working-directory: flux-ftl
+      env:
+        LLVM_SYS_140_PREFIX: /usr/lib/llvm-14
+      run: cargo build --verbose
+
+    - name: Test
+      working-directory: flux-ftl
+      env:
+        LLVM_SYS_140_PREFIX: /usr/lib/llvm-14
+      run: cargo test --verbose
+
+    - name: Clippy
+      working-directory: flux-ftl
+      env:
+        LLVM_SYS_140_PREFIX: /usr/lib/llvm-14
+      run: cargo clippy -- -D warnings
