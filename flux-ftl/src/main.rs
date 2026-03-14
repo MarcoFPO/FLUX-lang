@@ -47,6 +47,12 @@ enum Commands {
         bmc: bool,
         #[arg(long, default_value = "10")]
         bmc_depth: u32,
+        /// Emit DWARF debug information
+        #[arg(long)]
+        debug_info: bool,
+        /// Enable Link-Time Optimization
+        #[arg(long)]
+        lto: bool,
     },
     Ir {
         file: String,
@@ -198,7 +204,8 @@ fn cmd_compile(file: &str, output: Option<&str>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, target_str: &str, bmc: bool, bmc_depth: u32) -> ExitCode {
+#[allow(clippy::too_many_arguments)]
+fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, target_str: &str, bmc: bool, bmc_depth: u32, debug_info: bool, lto: bool) -> ExitCode {
     let flux_target = match FluxTarget::parse(target_str) {
         Ok(t) => t,
         Err(e) => {
@@ -272,6 +279,8 @@ fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, target_str: &str, 
         output_format: OutputFormat::ObjectFile,
         target_triple: flux_target.resolved_triple(),
         target: flux_target,
+        emit_debug_info: debug_info,
+        lto,
     };
 
     let cg_result = match codegen::codegen(optimized_ast, &config) {
@@ -598,7 +607,9 @@ fn main() -> ExitCode {
             ref target,
             bmc,
             bmc_depth,
-        }) => cmd_build(file, output.as_deref(), opt_level, target, bmc, bmc_depth),
+            debug_info,
+            lto,
+        }) => cmd_build(file, output.as_deref(), opt_level, target, bmc, bmc_depth, debug_info, lto),
         Some(Commands::Ir { ref file, ref target }) => cmd_ir(file, target),
         Some(Commands::Generate {
             ref requirement,

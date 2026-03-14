@@ -174,7 +174,9 @@ fn build_tools() -> Vec<Tool> {
                     "ftl_source": { "type": "string" },
                     "output_path": { "type": "string", "description": "Path for output executable" },
                     "target": { "type": "string", "enum": ["host", "x86_64", "aarch64", "riscv64", "wasm32"], "default": "host" },
-                    "opt_level": { "type": "integer", "enum": [0, 1, 2, 3], "default": 2 }
+                    "opt_level": { "type": "integer", "enum": [0, 1, 2, 3], "default": 2 },
+                    "debug_info": { "type": "boolean", "description": "Emit DWARF debug information", "default": false },
+                    "lto": { "type": "boolean", "description": "Enable Link-Time Optimization", "default": false }
                 },
                 "required": ["ftl_source", "output_path"]
             }),
@@ -379,6 +381,8 @@ fn handle_flux_build(stdout: &std::io::Stdout, id: Value, args: &Value) {
 
     let target_str = args.get("target").and_then(|v| v.as_str()).unwrap_or("host");
     let opt_level_num = args.get("opt_level").and_then(|v| v.as_u64()).unwrap_or(2) as u8;
+    let debug_info = args.get("debug_info").and_then(|v| v.as_bool()).unwrap_or(false);
+    let lto = args.get("lto").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let flux_target = match FluxTarget::parse(target_str) {
         Ok(t) => t,
@@ -425,6 +429,8 @@ fn handle_flux_build(stdout: &std::io::Stdout, id: Value, args: &Value) {
         output_format: OutputFormat::ObjectFile,
         target_triple: flux_target.resolved_triple(),
         target: flux_target,
+        emit_debug_info: debug_info,
+        lto,
     };
 
     let cg_result = match codegen::codegen(optimized_ast, &config) {

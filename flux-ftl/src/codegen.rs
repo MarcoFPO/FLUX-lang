@@ -20,7 +20,11 @@
 use std::collections::HashMap;
 
 use inkwell::context::Context;
-use inkwell::module::Module;
+use inkwell::debug_info::{
+    AsDIScope, DWARFEmissionKind, DWARFSourceLanguage, DIFlags, DIFlagsConstants,
+};
+use inkwell::module::{FlagBehavior, Module};
+use inkwell::passes::PassManager;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
 };
@@ -108,6 +112,10 @@ pub struct CodegenConfig {
     pub opt_level: OptLevel,
     /// Desired output format.
     pub output_format: OutputFormat,
+    /// Emit DWARF debug information into the output.
+    pub emit_debug_info: bool,
+    /// Enable Link-Time Optimization (LTO) passes.
+    pub lto: bool,
 }
 
 /// Optimization level mapping.
@@ -125,6 +133,8 @@ pub enum OutputFormat {
     ObjectFile,
     Assembly,
     LlvmIr,
+    /// LLVM bitcode output (used for LTO pipelines).
+    Bitcode,
 }
 
 /// Successful codegen output.
@@ -180,6 +190,8 @@ impl Default for CodegenConfig {
             target,
             opt_level: OptLevel::None,
             output_format: OutputFormat::ObjectFile,
+            emit_debug_info: false,
+            lto: false,
         }
     }
 }
@@ -193,6 +205,8 @@ impl CodegenConfig {
             target,
             opt_level: OptLevel::None,
             output_format: OutputFormat::ObjectFile,
+            emit_debug_info: false,
+            lto: false,
         }
     }
 }
@@ -216,7 +230,18 @@ impl OptLevel {
 pub fn codegen(program: &Program, config: &CodegenConfig) -> Result<CodegenResult, CodegenError> {
     let context = Context::create();
     let mut generator = CodeGenerator::new(&context, program, config)?;
+
+    // Set up DWARF debug info if requested
+    if config.emit_debug_info {
+        generator.setup_debug_info();
+    }
+
     generator.emit_program()?;
+
+    // Attach debug subprogram to main and finalize debug info
+    if config.emit_debug_info {
+        generator.finalize_debug_info();
+    }
 
     // Run LLVM optimization passes on the main function if opt_level > 0
     let llvm_opt_level = match config.opt_level {
@@ -229,6 +254,11 @@ pub fn codegen(program: &Program, config: &CodegenConfig) -> Result<CodegenResul
         && let Some(main_fn) = generator.module.get_function("main")
     {
         optimizer::optimize_llvm_function(&generator.module, main_fn, llvm_opt_level);
+    }
+
+    // Run LTO (module-level) passes if requested
+    if config.lto {
+        generator.run_lto_passes();
     }
 
     generator.finish()
@@ -283,7 +313,7 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                 "generic",
                 "",
                 config.opt_level.to_inkwell(),
-                RelocMode::Default,
+                RelocMode::PIC,
                 CodeModel::Default,
             )
         {
@@ -2115,6 +2145,99 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
     }
 
     // ------------------------------------------------------------------
+    // DWARF debug info support
+    // ------------------------------------------------------------------
+
+    /// Set up module flags required for DWARF debug info emission.
+    fn setup_debug_info(&self) {
+        let debug_metadata_version = self.context.i32_type().const_int(3, false);
+        self.module.add_basic_value_flag(
+            "Debug Info Version",
+            FlagBehavior::Warning,
+            debug_metadata_version,
+        );
+
+        let dwarf_version = self.context.i32_type().const_int(4, false);
+        self.module.add_basic_value_flag(
+            "Dwarf Version",
+            FlagBehavior::Warning,
+            dwarf_version,
+        );
+    }
+
+    /// Create debug subprogram for the main function and finalize debug info.
+    fn finalize_debug_info(&self) {
+        let is_optimized = !matches!(self.config.opt_level, OptLevel::None);
+
+        let (dibuilder, compile_unit) = self.module.create_debug_info_builder(
+            true,
+            DWARFSourceLanguage::C,
+            "flux_module.ftl",
+            ".",
+            "flux-ftl",
+            is_optimized,
+            "",
+            0,
+            "",
+            DWARFEmissionKind::Full,
+            0,
+            false,
+            false,
+            "",
+            "",
+        );
+
+        let subroutine_type = dibuilder.create_subroutine_type(
+            compile_unit.get_file(),
+            None,
+            &[],
+            DIFlags::PUBLIC,
+        );
+
+        let func_scope = dibuilder.create_function(
+            compile_unit.as_debug_info_scope(),
+            "main",
+            None,
+            compile_unit.get_file(),
+            0,
+            subroutine_type,
+            true,
+            true,
+            0,
+            DIFlags::PUBLIC,
+            is_optimized,
+        );
+
+        if let Some(main_fn) = self.module.get_function("main") {
+            main_fn.set_subprogram(func_scope);
+        }
+
+        dibuilder.finalize();
+    }
+
+    // ------------------------------------------------------------------
+    // LTO (Link-Time Optimization) passes
+    // ------------------------------------------------------------------
+
+    /// Run module-level LTO optimization passes.
+    fn run_lto_passes(&self) {
+        let mpm: PassManager<Module<'_>> = PassManager::create(());
+
+        mpm.add_function_inlining_pass();
+        mpm.add_global_dce_pass();
+        mpm.add_global_optimizer_pass();
+        mpm.add_constant_merge_pass();
+        mpm.add_dead_arg_elimination_pass();
+        mpm.add_ipsccp_pass();
+        mpm.add_strip_dead_prototypes_pass();
+        mpm.add_function_attrs_pass();
+        mpm.add_merge_functions_pass();
+        mpm.add_internalize_pass(true);
+
+        mpm.run_on(&self.module);
+    }
+
+    // ------------------------------------------------------------------
     // Finalize: produce IR text and optional object file
     // ------------------------------------------------------------------
 
@@ -2123,6 +2246,10 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
 
         let output_bytes = match self.config.output_format {
             OutputFormat::LlvmIr => llvm_ir.as_bytes().to_vec(),
+            OutputFormat::Bitcode => {
+                let buf = self.module.write_bitcode_to_memory();
+                buf.as_slice().to_vec()
+            }
             OutputFormat::ObjectFile | OutputFormat::Assembly => {
                 self.emit_machine_code()?
             }
@@ -2149,7 +2276,7 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                 "generic",
                 "",
                 self.config.opt_level.to_inkwell(),
-                RelocMode::Default,
+                RelocMode::PIC,
                 CodeModel::Default,
             )
             .ok_or_else(|| {

@@ -245,3 +245,93 @@ fn test_evolve_with_testdata() {
         "stderr should contain best fitness"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Phase 22: --debug-info and --lto CLI flags
+// ---------------------------------------------------------------------------
+
+#[test]
+fn build_with_debug_info() {
+    let out_path = std::env::temp_dir().join("flux_cli_test_dbg");
+    let _ = std::fs::remove_file(&out_path);
+
+    let output = flux_cmd()
+        .args([
+            "build",
+            "testdata/hello_world.ftl",
+            "--debug-info",
+            "-o",
+            out_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        output.status.success(),
+        "build --debug-info failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(out_path.exists(), "executable was not created with --debug-info");
+
+    // Run the built executable to verify it still works
+    let run_output = Command::new(&out_path)
+        .output()
+        .expect("failed to run built binary");
+    let stdout = String::from_utf8_lossy(&run_output.stdout);
+    assert_eq!(stdout, "Hello World\n");
+
+    let _ = std::fs::remove_file(&out_path);
+}
+
+#[test]
+fn build_with_lto() {
+    let out_path = std::env::temp_dir().join("flux_cli_test_lto");
+    let _ = std::fs::remove_file(&out_path);
+
+    let output = flux_cmd()
+        .args([
+            "build",
+            "testdata/hello_world.ftl",
+            "--lto",
+            "-o",
+            out_path.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        output.status.success(),
+        "build --lto failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(out_path.exists(), "executable was not created with --lto");
+
+    // Run the built executable to verify it still works
+    let run_output = Command::new(&out_path)
+        .output()
+        .expect("failed to run built binary");
+    let stdout = String::from_utf8_lossy(&run_output.stdout);
+    assert_eq!(stdout, "Hello World\n");
+
+    let _ = std::fs::remove_file(&out_path);
+}
+
+#[test]
+fn build_help_shows_debug_info_and_lto() {
+    let output = flux_cmd()
+        .args(["build", "--help"])
+        .output()
+        .expect("failed to execute");
+
+    assert!(output.status.success(), "build --help should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--debug-info"),
+        "help should mention --debug-info"
+    );
+    assert!(
+        stdout.contains("--lto"),
+        "help should mention --lto"
+    );
+}
