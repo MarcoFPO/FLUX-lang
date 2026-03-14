@@ -5,7 +5,7 @@
 use std::io::Write;
 use std::process::Command;
 
-use flux_ftl::codegen::{codegen, CodegenConfig, OutputFormat};
+use flux_ftl::codegen::{codegen, CodegenConfig, FluxTarget, OutputFormat};
 use flux_ftl::parser::parse_ftl;
 
 fn parse_file(path: &str) -> flux_ftl::ast::Program {
@@ -294,5 +294,121 @@ fn memory_ops_in_ir() {
     assert!(
         result.llvm_ir.contains("load"),
         "IR must contain load instructions"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 17: Multi-Target Codegen tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_target_from_str() {
+    assert_eq!(FluxTarget::parse("x86_64").unwrap(), FluxTarget::X86_64);
+    assert_eq!(FluxTarget::parse("x86-64").unwrap(), FluxTarget::X86_64);
+    assert_eq!(
+        FluxTarget::parse("aarch64").unwrap(),
+        FluxTarget::Aarch64
+    );
+    assert_eq!(FluxTarget::parse("arm64").unwrap(), FluxTarget::Aarch64);
+    assert_eq!(
+        FluxTarget::parse("riscv64").unwrap(),
+        FluxTarget::Riscv64
+    );
+    assert_eq!(FluxTarget::parse("wasm32").unwrap(), FluxTarget::Wasm32);
+    assert_eq!(FluxTarget::parse("wasm").unwrap(), FluxTarget::Wasm32);
+    assert_eq!(FluxTarget::parse("host").unwrap(), FluxTarget::Host);
+    assert_eq!(FluxTarget::parse("native").unwrap(), FluxTarget::Host);
+    assert!(FluxTarget::parse("unknown-arch").is_err());
+}
+
+#[test]
+fn test_target_triple() {
+    assert_eq!(FluxTarget::X86_64.triple(), "x86_64-unknown-linux-gnu");
+    assert_eq!(FluxTarget::Aarch64.triple(), "aarch64-unknown-linux-gnu");
+    assert_eq!(FluxTarget::Riscv64.triple(), "riscv64-unknown-linux-gnu");
+    assert_eq!(FluxTarget::Wasm32.triple(), "wasm32-unknown-unknown");
+    assert_eq!(FluxTarget::Host.triple(), "host");
+}
+
+#[test]
+fn test_ir_x86_64_target() {
+    let program = parse_file("testdata/hello_world.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::LlvmIr,
+        target: FluxTarget::X86_64,
+        target_triple: FluxTarget::X86_64.triple().to_string(),
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("codegen for x86_64 failed");
+    assert!(
+        result.llvm_ir.contains("x86_64"),
+        "IR must contain x86_64 target triple, got:\n{}",
+        result.llvm_ir.lines().take(5).collect::<Vec<_>>().join("\n")
+    );
+    assert!(
+        result.llvm_ir.contains("define i32 @main"),
+        "IR must define main"
+    );
+}
+
+#[test]
+fn test_ir_aarch64_target() {
+    let program = parse_file("testdata/hello_world.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::LlvmIr,
+        target: FluxTarget::Aarch64,
+        target_triple: FluxTarget::Aarch64.triple().to_string(),
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("codegen for aarch64 failed");
+    assert!(
+        result.llvm_ir.contains("aarch64"),
+        "IR must contain aarch64 target triple, got:\n{}",
+        result.llvm_ir.lines().take(5).collect::<Vec<_>>().join("\n")
+    );
+    assert!(
+        result.llvm_ir.contains("define i32 @main"),
+        "IR must define main"
+    );
+}
+
+#[test]
+fn test_ir_wasm32_target() {
+    let program = parse_file("testdata/hello_world.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::LlvmIr,
+        target: FluxTarget::Wasm32,
+        target_triple: FluxTarget::Wasm32.triple().to_string(),
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("codegen for wasm32 failed");
+    assert!(
+        result.llvm_ir.contains("wasm32"),
+        "IR must contain wasm32 target triple, got:\n{}",
+        result.llvm_ir.lines().take(5).collect::<Vec<_>>().join("\n")
+    );
+    assert!(
+        result.llvm_ir.contains("define i32 @main"),
+        "IR must define main"
+    );
+}
+
+#[test]
+fn test_ir_host_target() {
+    let program = parse_file("testdata/hello_world.ftl");
+    let config = CodegenConfig {
+        output_format: OutputFormat::LlvmIr,
+        target: FluxTarget::Host,
+        ..CodegenConfig::default()
+    };
+    let result = codegen(&program, &config).expect("codegen for host failed");
+    assert!(
+        result.llvm_ir.contains("define i32 @main"),
+        "IR must define main for host target"
+    );
+    // Host target should have a target triple set in the module
+    assert!(
+        result.llvm_ir.contains("target triple"),
+        "IR must contain target triple directive"
     );
 }

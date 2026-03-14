@@ -38,11 +38,72 @@ use crate::optimizer;
 // Public configuration types
 // ---------------------------------------------------------------------------
 
+/// Supported code generation targets.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FluxTarget {
+    X86_64,
+    Aarch64,
+    Riscv64,
+    Wasm32,
+    Host,
+}
+
+impl FluxTarget {
+    /// Return the LLVM target triple for this target.
+    pub fn triple(&self) -> &str {
+        match self {
+            FluxTarget::X86_64 => "x86_64-unknown-linux-gnu",
+            FluxTarget::Aarch64 => "aarch64-unknown-linux-gnu",
+            FluxTarget::Riscv64 => "riscv64-unknown-linux-gnu",
+            FluxTarget::Wasm32 => "wasm32-unknown-unknown",
+            FluxTarget::Host => "host",
+        }
+    }
+
+    /// Parse a target name from a string.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.to_lowercase().as_str() {
+            "x86_64" | "x86-64" | "x86_64-unknown-linux-gnu" => Ok(FluxTarget::X86_64),
+            "aarch64" | "arm64" | "aarch64-unknown-linux-gnu" => Ok(FluxTarget::Aarch64),
+            "riscv64" | "riscv64-unknown-linux-gnu" => Ok(FluxTarget::Riscv64),
+            "wasm32" | "wasm" | "wasm32-unknown-unknown" => Ok(FluxTarget::Wasm32),
+            "host" | "native" => Ok(FluxTarget::Host),
+            _ => Err(format!("unknown target: '{}'. Supported: x86_64, aarch64, riscv64, wasm32, host", s)),
+        }
+    }
+
+    /// Initialize the corresponding LLVM backend for this target.
+    fn initialize_backend(&self) {
+        let config = &InitializationConfig::default();
+        match self {
+            FluxTarget::X86_64 => Target::initialize_x86(config),
+            FluxTarget::Aarch64 => Target::initialize_aarch64(config),
+            FluxTarget::Riscv64 => Target::initialize_riscv(config),
+            FluxTarget::Wasm32 => Target::initialize_webassembly(config),
+            FluxTarget::Host => Target::initialize_native(config)
+                .expect("failed to initialize native LLVM target"),
+        }
+    }
+
+    /// Resolve the effective triple (resolves Host to the actual host triple).
+    pub fn resolved_triple(&self) -> String {
+        match self {
+            FluxTarget::Host => TargetMachine::get_default_triple()
+                .as_str()
+                .to_string_lossy()
+                .into_owned(),
+            other => other.triple().to_string(),
+        }
+    }
+}
+
 /// Controls code generation behavior.
 #[derive(Debug, Clone)]
 pub struct CodegenConfig {
     /// LLVM target triple (default: host triple).
     pub target_triple: String,
+    /// Target architecture for code generation.
+    pub target: FluxTarget,
     /// Optimization level (0-3).
     pub opt_level: OptLevel,
     /// Desired output format.
@@ -113,11 +174,23 @@ impl std::error::Error for CodegenError {}
 
 impl Default for CodegenConfig {
     fn default() -> Self {
+        let target = FluxTarget::Host;
         Self {
-            target_triple: TargetMachine::get_default_triple()
-                .as_str()
-                .to_string_lossy()
-                .into_owned(),
+            target_triple: target.resolved_triple(),
+            target,
+            opt_level: OptLevel::None,
+            output_format: OutputFormat::ObjectFile,
+        }
+    }
+}
+
+impl CodegenConfig {
+    /// Create a config for a specific target with default optimization.
+    pub fn for_target(target: FluxTarget) -> Self {
+        let target_triple = target.resolved_triple();
+        Self {
+            target_triple,
+            target,
             opt_level: OptLevel::None,
             output_format: OutputFormat::ObjectFile,
         }
@@ -196,6 +269,26 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
         config: &CodegenConfig,
     ) -> Result<Self, CodegenError> {
         let module = context.create_module("flux_module");
+
+        // Initialize the LLVM backend and set module target triple + data layout
+        config.target.initialize_backend();
+        let resolved_triple = config.target.resolved_triple();
+        let triple = TargetTriple::create(&resolved_triple);
+        module.set_triple(&triple);
+
+        // Set data layout from target machine if we can create one
+        if let Ok(llvm_target) = Target::from_triple(&triple)
+            && let Some(machine) = llvm_target.create_target_machine(
+                &triple,
+                "generic",
+                "",
+                config.opt_level.to_inkwell(),
+                RelocMode::Default,
+                CodeModel::Default,
+            )
+        {
+            module.set_data_layout(&machine.get_target_data().get_data_layout());
+        }
 
         // Build lookup maps
         let mut compute_map = HashMap::new();
@@ -2042,9 +2135,11 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
     }
 
     fn emit_machine_code(&self) -> Result<Vec<u8>, CodegenError> {
-        Target::initialize_x86(&InitializationConfig::default());
+        // Backend already initialized in new(), but ensure it's ready
+        self.config.target.initialize_backend();
 
-        let triple = TargetTriple::create(&self.config.target_triple);
+        let resolved_triple = self.config.target.resolved_triple();
+        let triple = TargetTriple::create(&resolved_triple);
         let target = Target::from_triple(&triple)
             .map_err(|e| CodegenError::TargetInitFailed(e.to_string()))?;
 
