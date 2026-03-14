@@ -1,0 +1,177 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  LLVM_SYS_140_PREFIX: /usr/lib/llvm-14
+
+jobs:
+  build-linux-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libz3-dev llvm-14-dev libllvm14 libclang-14-dev libpolly-14-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            flux-ftl/target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('flux-ftl/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Build release binaries
+        working-directory: flux-ftl
+        run: cargo build --release --verbose
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Package flux-ftl
+        run: |
+          mkdir -p dist
+          cp flux-ftl/target/release/flux-ftl dist/
+          cd dist
+          tar czf "flux-ftl-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz" flux-ftl
+          sha256sum "flux-ftl-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz" > "flux-ftl-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz.sha256"
+          rm flux-ftl
+
+      - name: Package flux-mcp
+        run: |
+          cp flux-ftl/target/release/flux-mcp dist/
+          cd dist
+          tar czf "flux-mcp-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz" flux-mcp
+          sha256sum "flux-mcp-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz" > "flux-mcp-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz.sha256"
+          rm flux-mcp
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/*
+          retention-days: 1
+
+  # TODO: aarch64 cross-compilation disabled — LLVM-14 + libz3 native deps
+  # make cross-compilation non-trivial. Revisit when GitHub provides
+  # native ARM64 runners with ubuntu-latest or when a suitable
+  # cross-compilation toolchain for these deps is established.
+  #
+  # build-linux-aarch64:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - name: Install system dependencies and cross tools
+  #       run: |
+  #         sudo apt-get update
+  #         sudo dpkg --add-architecture arm64
+  #         sudo apt-get install -y gcc-aarch64-linux-gnu
+  #         # Cross-compiled LLVM-14 and z3 libs would be needed here
+  #
+  #     - name: Setup Rust
+  #       uses: dtolnay/rust-toolchain@stable
+  #       with:
+  #         targets: aarch64-unknown-linux-gnu
+  #
+  #     - name: Build release binaries (aarch64)
+  #       working-directory: flux-ftl
+  #       env:
+  #         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+  #       run: cargo build --release --target aarch64-unknown-linux-gnu
+  #
+  #     - name: Extract version
+  #       id: version
+  #       run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+  #
+  #     - name: Package binaries
+  #       run: |
+  #         mkdir -p dist
+  #         cp flux-ftl/target/aarch64-unknown-linux-gnu/release/flux-ftl dist/
+  #         cd dist && tar czf "flux-ftl-${version}-linux-aarch64.tar.gz" flux-ftl
+  #         sha256sum *.tar.gz > checksums-aarch64.txt
+  #
+  #     - name: Upload artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: linux-aarch64
+  #         path: dist/*
+  #         retention-days: 1
+
+  release:
+    needs: [build-linux-x86_64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download x86_64 artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64
+          path: artifacts/
+
+      - name: Extract version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release body
+        id: body
+        run: |
+          FTL_SHA=$(cat artifacts/flux-ftl-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz.sha256 | awk '{print $1}')
+          MCP_SHA=$(cat artifacts/flux-mcp-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz.sha256 | awk '{print $1}')
+          cat > release-body.json <<ENDJSON
+          {
+            "version": "${{ steps.version.outputs.version }}",
+            "tag": "${GITHUB_REF_NAME}",
+            "binaries": [
+              {
+                "name": "flux-ftl-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz",
+                "arch": "x86_64",
+                "os": "linux",
+                "sha256": "${FTL_SHA}"
+              },
+              {
+                "name": "flux-mcp-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz",
+                "arch": "x86_64",
+                "os": "linux",
+                "sha256": "${MCP_SHA}"
+              }
+            ]
+          }
+          ENDJSON
+          # Trim leading whitespace from heredoc indentation
+          sed -i 's/^          //' release-body.json
+          echo "json<<EOF" >> "$GITHUB_OUTPUT"
+          cat release-body.json >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "FLUX FTL ${{ github.ref_name }}"
+          body: |
+            ```json
+            ${{ steps.body.outputs.json }}
+            ```
+          files: |
+            artifacts/flux-ftl-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz
+            artifacts/flux-ftl-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz.sha256
+            artifacts/flux-mcp-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz
+            artifacts/flux-mcp-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz.sha256
