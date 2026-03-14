@@ -2,6 +2,7 @@ use std::io::Read;
 
 use serde::Serialize;
 
+use flux_ftl::compiler::{self, CompileMetadata};
 use flux_ftl::parser::parse_ftl;
 use flux_ftl::error::Status;
 use flux_ftl::validator::validate;
@@ -20,6 +21,8 @@ struct FullResult {
     validation_errors: Vec<GenericError>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     proof_results: Vec<ProofResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compiled: Option<CompileMetadata>,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,6 +59,7 @@ fn main() {
                 parse_errors: parse_result.errors,
                 validation_errors: Vec::new(),
                 proof_results: Vec::new(),
+                compiled: None,
             };
             println!("{}", serde_json::to_string(&out).unwrap());
             return;
@@ -127,12 +131,23 @@ fn main() {
         FullStatus::Ok
     };
 
+    // Phase 5: Compilation (run unless fatal validation errors)
+    let compiled = if !has_fatal {
+        match compiler::compile(&ast) {
+            Ok(graph) => Some(CompileMetadata::from(&graph)),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
     let out = FullResult {
         status,
         ast: Some(ast),
         parse_errors: Vec::new(),
         validation_errors,
         proof_results,
+        compiled,
     };
 
     println!("{}", serde_json::to_string(&out).unwrap());
