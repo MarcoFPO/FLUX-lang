@@ -9,6 +9,7 @@ use flux_ftl::compiler::{self, CompileMetadata};
 use flux_ftl::error::Status;
 use flux_ftl::evolution::{self, EvolutionConfig, GraphPool};
 use flux_ftl::feedback::{self, LlmFeedback, ValidationError as FeedbackValidationError};
+use flux_ftl::llm::{GenerateRequest, GenerationLoop, LlmConfig, LlmProvider, RequirementType};
 use flux_ftl::optimizer::{self, OptimizationConfig};
 use flux_ftl::parser::parse_ftl;
 use flux_ftl::prover::{prove_contracts, ProofResult, ProofStatus, ProverConfig};
@@ -53,6 +54,31 @@ enum Commands {
     /// Emit LLVM IR for debugging
     Ir {
         file: String,
+    },
+    /// Generate FTL from natural language using LLM
+    Generate {
+        /// Natural language requirement
+        requirement: String,
+
+        /// Requirement type: translate, optimize, invent, discover
+        #[arg(long, default_value = "translate")]
+        requirement_type: String,
+
+        /// LLM provider: anthropic, openai
+        #[arg(long, default_value = "anthropic")]
+        provider: String,
+
+        /// Model name (default depends on provider)
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Max repair iterations
+        #[arg(long, default_value = "5")]
+        max_iterations: u32,
+
+        /// Output file for generated FTL (stdout if not set)
+        #[arg(short, long)]
+        output: Option<String>,
     },
     /// Evolve graph variants using a genetic algorithm
     Evolve {
@@ -574,6 +600,108 @@ fn cmd_ir(file: &str) -> ExitCode {
 }
 
 // ---------------------------------------------------------------------------
+// Generate subcommand
+// ---------------------------------------------------------------------------
+
+fn cmd_generate(
+    requirement: &str,
+    requirement_type: &str,
+    provider: &str,
+    model: Option<&str>,
+    max_iterations: u32,
+    output: Option<&str>,
+) -> ExitCode {
+    // Parse requirement type
+    let req_type = match RequirementType::from_str_loose(requirement_type) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+
+    // Parse provider
+    let llm_provider = match LlmProvider::from_str_loose(provider) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+
+    // Build config from environment
+    let mut config = match LlmConfig::from_env(llm_provider, model.map(String::from)) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return ExitCode::from(1);
+        }
+    };
+    config.max_iterations = max_iterations;
+
+    // Create generation loop
+    let gen_loop = match GenerationLoop::new(config) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+
+    let request = GenerateRequest {
+        requirement: requirement.to_string(),
+        requirement_type: req_type,
+        context: None,
+        examples: Vec::new(),
+    };
+
+    // Run async generation loop
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("error: failed to create async runtime: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+
+    let result = match rt.block_on(gen_loop.generate(&request)) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: generation failed: {}", e);
+            return ExitCode::from(1);
+        }
+    };
+
+    // Serialize result as JSON
+    let json = match serde_json::to_string_pretty(&result) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!("error: JSON serialization: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+
+    // Output to file or stdout
+    if let Some(path) = output {
+        if let Err(e) = std::fs::write(path, &json) {
+            eprintln!("error: write output file: {}", e);
+            return ExitCode::from(2);
+        }
+        eprintln!("Output written to {}", path);
+    } else {
+        println!("{}", json);
+    }
+
+    let exit_code = match result.final_status {
+        flux_ftl::llm::GenerationStatus::Success
+        | flux_ftl::llm::GenerationStatus::PartialSuccess => 0,
+        _ => 1,
+    };
+
+    ExitCode::from(exit_code)
+}
+
+// ---------------------------------------------------------------------------
 // Evolve subcommand
 // ---------------------------------------------------------------------------
 
@@ -686,6 +814,21 @@ fn main() -> ExitCode {
             opt_level,
         }) => cmd_build(file, output.as_deref(), opt_level),
         Some(Commands::Ir { ref file }) => cmd_ir(file),
+        Some(Commands::Generate {
+            ref requirement,
+            ref requirement_type,
+            ref provider,
+            ref model,
+            max_iterations,
+            ref output,
+        }) => cmd_generate(
+            requirement,
+            requirement_type,
+            provider,
+            model.as_deref(),
+            max_iterations,
+            output.as_deref(),
+        ),
         Some(Commands::Evolve {
             ref file,
             generations,

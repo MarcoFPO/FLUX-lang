@@ -165,3 +165,103 @@ fn check_text_format() {
         "text output should contain 'Prove'"
     );
 }
+
+#[test]
+fn test_generate_help() {
+    let output = flux_cmd()
+        .args(["generate", "--help"])
+        .output()
+        .expect("failed to execute");
+
+    assert!(output.status.success(), "generate --help should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--requirement-type"),
+        "help should mention --requirement-type"
+    );
+    assert!(
+        stdout.contains("--provider"),
+        "help should mention --provider"
+    );
+    assert!(
+        stdout.contains("--model"),
+        "help should mention --model"
+    );
+    assert!(
+        stdout.contains("--max-iterations"),
+        "help should mention --max-iterations"
+    );
+    assert!(
+        stdout.contains("--output"),
+        "help should mention --output"
+    );
+}
+
+#[test]
+fn test_generate_missing_api_key() {
+    // Run without any API key env vars set — should produce a clear error, not panic
+    let output = flux_cmd()
+        .args(["generate", "Write a hello world program"])
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("OPENAI_API_KEY")
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        !output.status.success(),
+        "should fail without API key"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("API key") || stderr.contains("ANTHROPIC_API_KEY"),
+        "error message should mention API key, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_evolve_with_testdata() {
+    let output = flux_cmd()
+        .args([
+            "evolve",
+            "testdata/hello_world.ftl",
+            "--generations",
+            "2",
+            "--population",
+            "5",
+            "--seed",
+            "42",
+        ])
+        .output()
+        .expect("failed to execute");
+
+    assert!(
+        output.status.success(),
+        "evolve failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // stdout should be valid JSON (the best evolved program)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&stdout).expect("evolve stdout is not valid JSON");
+
+    // Should contain nodes and entry (the program structure)
+    assert!(
+        json["nodes"].is_array() || json["entry"].is_string(),
+        "JSON output should contain program structure"
+    );
+
+    // stderr should contain evolution stats
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Evolution complete"),
+        "stderr should contain evolution summary"
+    );
+    assert!(
+        stderr.contains("best fitness"),
+        "stderr should contain best fitness"
+    );
+}
