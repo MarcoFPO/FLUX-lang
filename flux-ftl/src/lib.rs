@@ -7,6 +7,7 @@ pub mod feedback;
 pub mod llm;
 pub mod optimizer;
 pub mod parser;
+pub mod pipeline;
 pub mod prover;
 pub mod region_checker;
 pub mod type_checker;
