@@ -1080,6 +1080,8 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
 
                 // Body
                 builder.position_at_end(body_bb);
+                // Zero-initialize scoped region memory at loop iteration start
+                self.emit_scoped_region_cleanup(builder)?;
                 self.emit_control_node(&body.0, function, builder)?;
                 if builder
                     .get_insert_block()
@@ -1096,6 +1098,56 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
             }
         }
 
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Scoped region cleanup (zero-init at loop iteration boundaries)
+    // ------------------------------------------------------------------
+
+    fn emit_scoped_region_cleanup(
+        &self,
+        builder: &inkwell::builder::Builder<'ctx>,
+    ) -> Result<(), CodegenError> {
+        // Find all scoped regions
+        let scoped_region_ids: Vec<String> = self
+            .program
+            .regions
+            .iter()
+            .filter(|r| matches!(r.lifetime, crate::ast::Lifetime::Scoped))
+            .map(|r| r.id.0.clone())
+            .collect();
+
+        if scoped_region_ids.is_empty() {
+            return Ok(());
+        }
+
+        // For each memory allocation in a scoped region, zero out its memory
+        for mem in &self.program.memories {
+            if let MemoryOp::Alloc {
+                region, type_ref, ..
+            } = &mem.op
+                && scoped_region_ids.contains(&region.0)
+                && let Some(ptr) = self.pointers.get(&mem.id.0)
+            {
+                let size = self.type_ref_byte_size(type_ref);
+                let i8_ptr = builder
+                    .build_bitcast(
+                        *ptr,
+                        self.context.i8_type().ptr_type(AddressSpace::default()),
+                        "cleanup_ptr",
+                    )
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?
+                    .into_pointer_value();
+
+                let size_val = self.context.i64_type().const_int(size, false);
+                let zero = self.context.i8_type().const_int(0, false);
+
+                builder
+                    .build_memset(i8_ptr, 1, zero, size_val)
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+            }
+        }
         Ok(())
     }
 
@@ -2058,6 +2110,228 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                     .build_int_neg(int_val, "neg")
                     .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
                 Ok(BasicValueEnum::IntValue(result))
+            }
+            "abs" => {
+                if inputs.is_empty() {
+                    return Err(CodegenError::Unsupported(
+                        "abs expects 1 input".to_string(),
+                    ));
+                }
+                let val = self.resolve_value(&inputs[0].0, function, builder)?;
+                let int_val = val.into_int_value();
+                let zero = int_val.get_type().const_int(0, false);
+                let is_neg = builder
+                    .build_int_compare(inkwell::IntPredicate::SLT, int_val, zero, "is_neg")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let negated = builder
+                    .build_int_neg(int_val, "negated")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let result = builder
+                    .build_select(
+                        is_neg,
+                        BasicValueEnum::IntValue(negated),
+                        BasicValueEnum::IntValue(int_val),
+                        "abs_result",
+                    )
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                Ok(result)
+            }
+            "min" => {
+                if inputs.len() < 2 {
+                    return Err(CodegenError::Unsupported(
+                        "min expects 2 inputs".to_string(),
+                    ));
+                }
+                let a = self
+                    .resolve_value(&inputs[0].0, function, builder)?
+                    .into_int_value();
+                let b = self
+                    .resolve_value(&inputs[1].0, function, builder)?
+                    .into_int_value();
+                let (a, b) = self.normalize_int_widths(a, b, builder)?;
+                let cmp = builder
+                    .build_int_compare(inkwell::IntPredicate::SLT, a, b, "min_cmp")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let result = builder
+                    .build_select(
+                        cmp,
+                        BasicValueEnum::IntValue(a),
+                        BasicValueEnum::IntValue(b),
+                        "min_result",
+                    )
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                Ok(result)
+            }
+            "max" => {
+                if inputs.len() < 2 {
+                    return Err(CodegenError::Unsupported(
+                        "max expects 2 inputs".to_string(),
+                    ));
+                }
+                let a = self
+                    .resolve_value(&inputs[0].0, function, builder)?
+                    .into_int_value();
+                let b = self
+                    .resolve_value(&inputs[1].0, function, builder)?
+                    .into_int_value();
+                let (a, b) = self.normalize_int_widths(a, b, builder)?;
+                let cmp = builder
+                    .build_int_compare(inkwell::IntPredicate::SGT, a, b, "max_cmp")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let result = builder
+                    .build_select(
+                        cmp,
+                        BasicValueEnum::IntValue(a),
+                        BasicValueEnum::IntValue(b),
+                        "max_result",
+                    )
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                Ok(result)
+            }
+            "clamp" => {
+                if inputs.len() < 3 {
+                    return Err(CodegenError::Unsupported(
+                        "clamp expects 3 inputs (val, min, max)".to_string(),
+                    ));
+                }
+                let val = self
+                    .resolve_value(&inputs[0].0, function, builder)?
+                    .into_int_value();
+                let lo = self
+                    .resolve_value(&inputs[1].0, function, builder)?
+                    .into_int_value();
+                let hi = self
+                    .resolve_value(&inputs[2].0, function, builder)?
+                    .into_int_value();
+                // clamp = max(lo, min(val, hi))
+                let (val_n, hi_n) = self.normalize_int_widths(val, hi, builder)?;
+                let cmp_hi = builder
+                    .build_int_compare(inkwell::IntPredicate::SLT, val_n, hi_n, "cmp_hi")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let min_val = builder
+                    .build_select(
+                        cmp_hi,
+                        BasicValueEnum::IntValue(val_n),
+                        BasicValueEnum::IntValue(hi_n),
+                        "min_val",
+                    )
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let (min_n, lo_n) =
+                    self.normalize_int_widths(min_val.into_int_value(), lo, builder)?;
+                let cmp_lo = builder
+                    .build_int_compare(inkwell::IntPredicate::SGT, min_n, lo_n, "cmp_lo")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let result = builder
+                    .build_select(
+                        cmp_lo,
+                        BasicValueEnum::IntValue(min_n),
+                        BasicValueEnum::IntValue(lo_n),
+                        "clamp_result",
+                    )
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                Ok(result)
+            }
+            "bhaskara_approx" => {
+                // Bhaskara sine approximation: 16x(pi-x) / (5pi^2 - 4x(pi-x))
+                // Input: one i32 value representing angle * 1000 (fixed-point)
+                // Output: i32 result * 1000
+                if inputs.is_empty() {
+                    return Err(CodegenError::Unsupported(
+                        "bhaskara_approx expects 1 input".to_string(),
+                    ));
+                }
+                let val = self.resolve_value(&inputs[0].0, function, builder)?;
+                let int_val = val.into_int_value();
+
+                // Constants for fixed-point Bhaskara approximation
+                let i64_ty = self.context.i64_type();
+                let pi_1000 = i64_ty.const_int(3142, false); // pi * 1000
+                let sixteen = i64_ty.const_int(16, false);
+                let five = i64_ty.const_int(5, false);
+                let four = i64_ty.const_int(4, false);
+                let thousand = i64_ty.const_int(1000, false);
+
+                // Widen input to i64
+                let x = builder
+                    .build_int_s_extend(int_val, i64_ty, "x_ext")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+
+                // pi_minus_x = pi*1000 - x
+                let pi_minus_x = builder
+                    .build_int_sub(pi_1000, x, "pi_minus_x")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+
+                // numerator = 16 * x * pi_minus_x
+                let num1 = builder
+                    .build_int_mul(sixteen, x, "num1")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let numerator = builder
+                    .build_int_mul(num1, pi_minus_x, "numerator")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+
+                // denom_part1 = 5 * pi^2 = 5 * pi_1000 * pi_1000 / 1000
+                let pi_sq = builder
+                    .build_int_mul(pi_1000, pi_1000, "pi_sq")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let five_pi_sq = builder
+                    .build_int_mul(five, pi_sq, "five_pi_sq")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let denom1 = builder
+                    .build_int_signed_div(five_pi_sq, thousand, "denom1")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+
+                // denom_part2 = 4 * x * pi_minus_x / 1000
+                let four_x = builder
+                    .build_int_mul(four, x, "four_x")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let denom2_raw = builder
+                    .build_int_mul(four_x, pi_minus_x, "denom2_raw")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let denom2 = builder
+                    .build_int_signed_div(denom2_raw, thousand, "denom2")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+
+                // denominator = denom1 - denom2
+                let denominator = builder
+                    .build_int_sub(denom1, denom2, "denominator")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+
+                // result = numerator / denominator (with division-by-zero guard)
+                let zero = i64_ty.const_int(0, false);
+                let is_zero = builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::EQ,
+                        denominator,
+                        zero,
+                        "denom_is_zero",
+                    )
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let safe_denom = builder
+                    .build_select(
+                        is_zero,
+                        BasicValueEnum::IntValue(i64_ty.const_int(1, false)),
+                        BasicValueEnum::IntValue(denominator),
+                        "safe_denom",
+                    )
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                let result = builder
+                    .build_int_signed_div(
+                        numerator,
+                        safe_denom.into_int_value(),
+                        "bhaskara_result",
+                    )
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+
+                // Truncate back to original width if needed
+                let result_truncated = if int_val.get_type().get_bit_width() < 64 {
+                    builder
+                        .build_int_truncate(result, int_val.get_type(), "bhaskara_trunc")
+                        .map_err(|e| CodegenError::EmitFailed(e.to_string()))?
+                } else {
+                    result
+                };
+
+                Ok(BasicValueEnum::IntValue(result_truncated))
             }
             _ => {
                 // Unknown generic compute: return a zero constant
