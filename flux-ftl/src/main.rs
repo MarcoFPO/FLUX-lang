@@ -12,7 +12,7 @@ use flux_ftl::feedback::{self, LlmFeedback, ValidationError as FeedbackValidatio
 use flux_ftl::llm::{GenerateRequest, GenerationLoop, LlmConfig, LlmProvider, RequirementType};
 use flux_ftl::optimizer::{self, OptimizationConfig};
 use flux_ftl::parser::parse_ftl;
-use flux_ftl::prover::{prove_contracts, ProofResult, ProofStatus, ProverConfig};
+use flux_ftl::prover::{prove_contracts, BmcConfig, ProofResult, ProofStatus, ProverConfig};
 use flux_ftl::region_checker::check_regions;
 use flux_ftl::type_checker::check_types_and_effects;
 use flux_ftl::validator::validate;
@@ -36,6 +36,12 @@ enum Commands {
         file: String,
         #[arg(long, default_value = "json", value_enum)]
         format: OutputFmt,
+        /// Enable Bounded Model Checking as Z3 fallback
+        #[arg(long)]
+        bmc: bool,
+        /// BMC unfolding depth (default: 10)
+        #[arg(long, default_value = "10")]
+        bmc_depth: u32,
     },
     /// Check + compile to binary graph (.flux.bin)
     Compile {
@@ -53,6 +59,12 @@ enum Commands {
         /// Target architecture: x86_64, aarch64, riscv64, wasm32, host
         #[arg(long, default_value = "host")]
         target: String,
+        /// Enable Bounded Model Checking as Z3 fallback
+        #[arg(long)]
+        bmc: bool,
+        /// BMC unfolding depth (default: 10)
+        #[arg(long, default_value = "10")]
+        bmc_depth: u32,
     },
     /// Emit LLVM IR for debugging
     Ir {
@@ -177,6 +189,10 @@ fn read_input(file: &str) -> Result<String, String> {
 // ---------------------------------------------------------------------------
 
 fn run_check(input: &str) -> FullResult {
+    run_check_with_bmc(input, None)
+}
+
+fn run_check_with_bmc(input: &str, bmc_config: Option<BmcConfig>) -> FullResult {
     let parse_result = parse_ftl(input);
 
     let ast = match parse_result.status {
@@ -261,7 +277,10 @@ fn run_check(input: &str) -> FullResult {
 
     // Phase 4: Contract proving (only if no fatal validation errors)
     let proof_results = if !has_fatal {
-        let config = ProverConfig::default();
+        let config = ProverConfig {
+            bmc_config,
+            ..ProverConfig::default()
+        };
         prove_contracts(&ast, &config)
     } else {
         Vec::new()
@@ -364,7 +383,7 @@ fn print_text(result: &FullResult) {
 // Subcommand implementations
 // ---------------------------------------------------------------------------
 
-fn cmd_check(file: &str, format: &OutputFmt) -> ExitCode {
+fn cmd_check(file: &str, format: &OutputFmt, bmc: bool, bmc_depth: u32) -> ExitCode {
     let input = match read_input(file) {
         Ok(s) => s,
         Err(e) => {
@@ -373,7 +392,16 @@ fn cmd_check(file: &str, format: &OutputFmt) -> ExitCode {
         }
     };
 
-    let result = run_check(&input);
+    let bmc_config = if bmc {
+        Some(BmcConfig {
+            max_depth: bmc_depth,
+            ..BmcConfig::default()
+        })
+    } else {
+        None
+    };
+
+    let result = run_check_with_bmc(&input, bmc_config);
     let exit = match result.status {
         FullStatus::Ok => ExitCode::SUCCESS,
         FullStatus::ValidationFail | FullStatus::ProofFail => ExitCode::from(1),
@@ -447,7 +475,7 @@ fn cmd_compile(file: &str, output: Option<&str>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, target_str: &str) -> ExitCode {
+fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, target_str: &str, bmc: bool, bmc_depth: u32) -> ExitCode {
     let flux_target = match FluxTarget::parse(target_str) {
         Ok(t) => t,
         Err(e) => {
@@ -463,7 +491,16 @@ fn cmd_build(file: &str, output: Option<&str>, opt_level: u8, target_str: &str) 
         }
     };
 
-    let result = run_check(&input);
+    let bmc_config = if bmc {
+        Some(BmcConfig {
+            max_depth: bmc_depth,
+            ..BmcConfig::default()
+        })
+    } else {
+        None
+    };
+
+    let result = run_check_with_bmc(&input, bmc_config);
     if result.status != FullStatus::Ok {
         if let Err(e) = print_json(&result) {
             eprintln!("error: {}", e);
@@ -827,7 +864,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Check { ref file, ref format }) => cmd_check(file, format),
+        Some(Commands::Check { ref file, ref format, bmc, bmc_depth }) => cmd_check(file, format, bmc, bmc_depth),
         Some(Commands::Compile { ref file, ref output }) => {
             cmd_compile(file, output.as_deref())
         }
@@ -836,7 +873,9 @@ fn main() -> ExitCode {
             ref output,
             opt_level,
             ref target,
-        }) => cmd_build(file, output.as_deref(), opt_level, target),
+            bmc,
+            bmc_depth,
+        }) => cmd_build(file, output.as_deref(), opt_level, target, bmc, bmc_depth),
         Some(Commands::Ir { ref file, ref target }) => cmd_ir(file, target),
         Some(Commands::Generate {
             ref requirement,
@@ -863,7 +902,7 @@ fn main() -> ExitCode {
         }) => cmd_evolve(file, generations, population, mutation_rate, crossover_rate, seed),
         None => {
             // Backward compatible: stdin -> JSON
-            cmd_check("-", &OutputFmt::Json)
+            cmd_check("-", &OutputFmt::Json, false, 10)
         }
     }
 }

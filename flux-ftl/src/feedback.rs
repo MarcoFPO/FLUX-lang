@@ -407,7 +407,7 @@ fn build_region_suggestion(ve: &ValidationError) -> FeedbackSuggestion {
 
 fn convert_proof_result(pr: &ProofResult) -> Option<FeedbackIssue> {
     match pr.status {
-        ProofStatus::Proven | ProofStatus::Assumed => None,
+        ProofStatus::Proven | ProofStatus::Assumed | ProofStatus::BmcProven => None,
         ProofStatus::Disproven => {
             let counterexample_info = pr
                 .counterexample
@@ -492,6 +492,41 @@ fn convert_proof_result(pr: &ProofResult) -> Option<FeedbackIssue> {
                 actual: Some("TIMEOUT".to_string()),
             }),
         }),
+        ProofStatus::BmcRefuted => {
+            let counterexample_info = pr
+                .counterexample
+                .as_ref()
+                .map(|ce| format!(" Counterexample: {}", ce))
+                .unwrap_or_default();
+
+            Some(FeedbackIssue {
+                severity: Severity::Error,
+                category: IssueCategory::ProofFailure,
+                node_id: pr.contract_id.clone(),
+                message: format!(
+                    "Contract {} ({} clause, index {}) is BMC_REFUTED for target {}.{}",
+                    pr.contract_id,
+                    pr.clause_kind,
+                    pr.clause_index,
+                    pr.target_id,
+                    counterexample_info
+                ),
+                suggestion: Some(FeedbackSuggestion {
+                    action: SuggestionAction::Modify,
+                    target_node: Some(pr.target_id.clone()),
+                    description: format!(
+                        "BMC found a counterexample for contract {}. Fix the compute node {} or adjust the contract clause",
+                        pr.contract_id, pr.target_id
+                    ),
+                    example: None,
+                }),
+                context: Some(IssueContext {
+                    related_nodes: vec![pr.target_id.clone()],
+                    expected: Some("PROVEN".to_string()),
+                    actual: Some(format!("BMC_REFUTED{}", counterexample_info)),
+                }),
+            })
+        }
     }
 }
 

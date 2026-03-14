@@ -29,16 +29,37 @@ pub enum ProofStatus {
     Unknown,
     Assumed,
     Timeout,
+    BmcProven,
+    BmcRefuted,
+}
+
+#[derive(Debug, Clone)]
+pub struct BmcConfig {
+    pub max_depth: u32,
+    pub timeout_secs: u64,
+}
+
+impl Default for BmcConfig {
+    fn default() -> Self {
+        Self {
+            max_depth: 10,
+            timeout_secs: 300,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct ProverConfig {
     pub timeout_ms: u32,
+    pub bmc_config: Option<BmcConfig>,
 }
 
 impl Default for ProverConfig {
     fn default() -> Self {
-        Self { timeout_ms: 5000 }
+        Self {
+            timeout_ms: 5000,
+            bmc_config: None,
+        }
     }
 }
 
@@ -518,7 +539,209 @@ fn translate_formula<'z>(
 }
 
 // ---------------------------------------------------------------------------
-// prove_clause — negation check pattern with type constraints and assumptions
+// BMC — Bounded Model Checking: unfold Forall quantifiers to depth k
+// ---------------------------------------------------------------------------
+
+/// Translate a formula for BMC by unfolding Forall quantifiers into conjunctions.
+fn translate_formula_bmc<'z>(
+    z3_ctx: &'z Context,
+    prover_ctx: &ProverContext,
+    formula: &Formula,
+    max_depth: u32,
+) -> Option<Bool<'z>> {
+    match formula {
+        Formula::Forall { var, range_start, range_end, body } => {
+            let start_val = eval_expr_to_i64(prover_ctx, range_start);
+            let end_val = eval_expr_to_i64(prover_ctx, range_end);
+
+            match (start_val, end_val) {
+                (Some(s), Some(e)) => {
+                    let range_len = if e > s { (e - s) as u32 } else { 0 };
+                    let depth = std::cmp::min(range_len, max_depth);
+                    let mut conjuncts: Vec<Bool<'z>> = Vec::new();
+                    for i in 0..depth {
+                        let val = s + i as i64;
+                        let substituted = substitute_var_in_formula(body, var, val);
+                        if let Some(b) = translate_formula_bmc(z3_ctx, prover_ctx, &substituted, max_depth) {
+                            conjuncts.push(b);
+                        } else {
+                            return None;
+                        }
+                    }
+                    if conjuncts.is_empty() {
+                        Some(Bool::from_bool(z3_ctx, true))
+                    } else {
+                        let refs: Vec<&Bool<'z>> = conjuncts.iter().collect();
+                        Some(Bool::and(z3_ctx, &refs))
+                    }
+                }
+                _ => {
+                    // Cannot resolve range bounds -- fall back to regular translation
+                    translate_formula(z3_ctx, prover_ctx, formula)
+                }
+            }
+        }
+
+        Formula::And { left, right } => {
+            let l = translate_formula_bmc(z3_ctx, prover_ctx, left, max_depth)?;
+            let r = translate_formula_bmc(z3_ctx, prover_ctx, right, max_depth)?;
+            Some(Bool::and(z3_ctx, &[&l, &r]))
+        }
+
+        Formula::Or { left, right } => {
+            let l = translate_formula_bmc(z3_ctx, prover_ctx, left, max_depth)?;
+            let r = translate_formula_bmc(z3_ctx, prover_ctx, right, max_depth)?;
+            Some(Bool::or(z3_ctx, &[&l, &r]))
+        }
+
+        Formula::Not { inner } => {
+            let i = translate_formula_bmc(z3_ctx, prover_ctx, inner, max_depth)?;
+            Some(i.not())
+        }
+
+        _ => translate_formula(z3_ctx, prover_ctx, formula),
+    }
+}
+
+/// Try to evaluate an expression to a concrete i64 value.
+fn eval_expr_to_i64(prover_ctx: &ProverContext, expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::IntLit { value } => Some(*value),
+        Expr::FieldAccess { node, fields } => resolve_field_access(prover_ctx, node.as_str(), fields),
+        Expr::Ident { name } => {
+            if name == "null" {
+                Some(0)
+            } else {
+                resolve_field_access(prover_ctx, name, &[])
+            }
+        }
+        Expr::BinOp { left, op, right } => {
+            let l = eval_expr_to_i64(prover_ctx, left)?;
+            let r = eval_expr_to_i64(prover_ctx, right)?;
+            match op {
+                ArithBinOp::Add => Some(l + r),
+                ArithBinOp::Sub => Some(l - r),
+                ArithBinOp::Mul => Some(l * r),
+                ArithBinOp::Div => {
+                    if r == 0 { None } else { Some(l / r) }
+                }
+                ArithBinOp::Mod => {
+                    if r == 0 { None } else { Some(l % r) }
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Substitute all occurrences of a variable name in a formula with a concrete integer value.
+fn substitute_var_in_formula(formula: &Formula, var: &str, value: i64) -> Formula {
+    match formula {
+        Formula::Comparison { left, op, right } => Formula::Comparison {
+            left: substitute_var_in_expr(left, var, value),
+            op: op.clone(),
+            right: substitute_var_in_expr(right, var, value),
+        },
+        Formula::And { left, right } => Formula::And {
+            left: Box::new(substitute_var_in_formula(left, var, value)),
+            right: Box::new(substitute_var_in_formula(right, var, value)),
+        },
+        Formula::Or { left, right } => Formula::Or {
+            left: Box::new(substitute_var_in_formula(left, var, value)),
+            right: Box::new(substitute_var_in_formula(right, var, value)),
+        },
+        Formula::Not { inner } => Formula::Not {
+            inner: Box::new(substitute_var_in_formula(inner, var, value)),
+        },
+        Formula::Forall { var: inner_var, range_start, range_end, body } => {
+            if inner_var == var {
+                formula.clone()
+            } else {
+                Formula::Forall {
+                    var: inner_var.clone(),
+                    range_start: substitute_var_in_expr(range_start, var, value),
+                    range_end: substitute_var_in_expr(range_end, var, value),
+                    body: Box::new(substitute_var_in_formula(body, var, value)),
+                }
+            }
+        }
+        _ => formula.clone(),
+    }
+}
+
+/// Substitute a variable name in an expression with a concrete integer value.
+fn substitute_var_in_expr(expr: &Expr, var: &str, value: i64) -> Expr {
+    match expr {
+        Expr::Ident { name } if name == var => Expr::IntLit { value },
+        Expr::BinOp { left, op, right } => Expr::BinOp {
+            left: Box::new(substitute_var_in_expr(left, var, value)),
+            op: op.clone(),
+            right: Box::new(substitute_var_in_expr(right, var, value)),
+        },
+        _ => expr.clone(),
+    }
+}
+
+/// BMC check for a single clause: unfold quantifiers and check with Z3.
+fn bmc_check_clause<'z>(
+    z3_ctx: &'z Context,
+    prover_ctx: &ProverContext,
+    clause: &ContractClause,
+    clause_idx: usize,
+    contract: &ContractDef,
+    type_constraints: &[Bool<'z>],
+    bmc_config: &BmcConfig,
+) -> (ProofStatus, Option<String>) {
+    let formula = match clause {
+        ContractClause::Pre { formula } => formula,
+        ContractClause::Post { formula } => formula,
+        ContractClause::Invariant { formula } => formula,
+        ContractClause::Assume { .. } => return (ProofStatus::Assumed, None),
+    };
+
+    let z3_formula = match translate_formula_bmc(z3_ctx, prover_ctx, formula, bmc_config.max_depth) {
+        Some(f) => f,
+        None => return (ProofStatus::Unknown, Some("BMC: untranslatable formula".into())),
+    };
+
+    let solver = Solver::new(z3_ctx);
+    let timeout_ms = (bmc_config.timeout_secs * 1000) as u32;
+    solver.set_params(&{
+        let mut params = z3::Params::new(z3_ctx);
+        params.set_u32("timeout", timeout_ms);
+        params
+    });
+
+    for tc in type_constraints {
+        solver.assert(tc);
+    }
+
+    let assume_axioms = collect_assume_axioms(z3_ctx, prover_ctx, &contract.clauses, clause_idx);
+    for axiom in &assume_axioms {
+        solver.assert(axiom);
+    }
+
+    solver.assert(&z3_formula.not());
+
+    match solver.check() {
+        SatResult::Unsat => (ProofStatus::BmcProven, None),
+        SatResult::Sat => {
+            let ce = solver
+                .get_model()
+                .map(|m| format!("{}", m))
+                .unwrap_or_default();
+            let ce = if ce.is_empty() { None } else { Some(ce) };
+            (ProofStatus::BmcRefuted, ce)
+        }
+        SatResult::Unknown => {
+            let reason = solver.get_reason_unknown().unwrap_or_default();
+            (ProofStatus::Unknown, Some(format!("BMC: {}", reason)))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// prove_clause -- negation check pattern with type constraints and assumptions
 // ---------------------------------------------------------------------------
 
 fn prove_clause<'z>(
@@ -581,11 +804,28 @@ fn prove_clause<'z>(
         }
         SatResult::Unknown => {
             let reason = solver.get_reason_unknown().unwrap_or_default();
-            if reason.contains("timeout") {
+            let z3_result = if reason.contains("timeout") {
                 (ProofStatus::Timeout, Some(reason))
             } else {
                 (ProofStatus::Unknown, Some(reason))
+            };
+
+            // BMC fallback: if Z3 returned Unknown and BMC is configured, try BMC
+            if z3_result.0 == ProofStatus::Unknown
+                && let Some(bmc_cfg) = &config.bmc_config
+            {
+                return bmc_check_clause(
+                    z3_ctx,
+                    prover_ctx,
+                    clause,
+                    clause_idx,
+                    contract,
+                    type_constraints,
+                    bmc_cfg,
+                );
             }
+
+            z3_result
         }
     }
 }
