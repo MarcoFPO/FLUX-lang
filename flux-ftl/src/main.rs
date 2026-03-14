@@ -8,6 +8,7 @@ use flux_ftl::codegen::{self, CodegenConfig, OptLevel, OutputFormat};
 use flux_ftl::compiler::{self, CompileMetadata};
 use flux_ftl::error::Status;
 use flux_ftl::feedback::{self, LlmFeedback, ValidationError as FeedbackValidationError};
+use flux_ftl::optimizer::{self, OptimizationConfig};
 use flux_ftl::parser::parse_ftl;
 use flux_ftl::prover::{prove_contracts, ProofResult, ProofStatus, ProverConfig};
 use flux_ftl::region_checker::check_regions;
@@ -418,6 +419,27 @@ fn cmd_build(file: &str, output: Option<&str>, opt_level: u8) -> ExitCode {
         }
     };
 
+    // Apply graph-level optimizations before codegen
+    let opt_config = OptimizationConfig {
+        llvm_opt_level: opt_level,
+        enable_graph_opts: opt_level > 0,
+        strip_dead_nodes: opt_level > 0,
+        fold_constants: opt_level > 0,
+    };
+    let opt_result = optimizer::optimize_graph(ast, &opt_config);
+    let optimized_ast = &opt_result.optimized_program;
+
+    if opt_result.stats.constants_folded > 0 || opt_result.stats.dead_nodes_removed > 0 {
+        eprintln!(
+            "optimizer: folded {} constants, removed {} dead nodes, removed {} identities ({} -> {} nodes)",
+            opt_result.stats.constants_folded,
+            opt_result.stats.dead_nodes_removed,
+            opt_result.stats.identities_removed,
+            opt_result.stats.nodes_before,
+            opt_result.stats.nodes_after,
+        );
+    }
+
     let opt = match opt_level {
         0 => OptLevel::None,
         1 => OptLevel::Less,
@@ -431,7 +453,7 @@ fn cmd_build(file: &str, output: Option<&str>, opt_level: u8) -> ExitCode {
         ..CodegenConfig::default()
     };
 
-    let cg_result = match codegen::codegen(ast, &config) {
+    let cg_result = match codegen::codegen(optimized_ast, &config) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: codegen: {}", e);
