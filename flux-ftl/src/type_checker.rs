@@ -152,6 +152,11 @@ fn build_compute_type_map(program: &Program) -> HashMap<String, TypeRef> {
             | ComputeOp::Generic { type_ref, .. }
             | ComputeOp::AtomicLoad { type_ref, .. } => Some(type_ref),
             ComputeOp::AtomicStore { .. } | ComputeOp::AtomicCas { .. } => None,
+            ComputeOp::StructGet { type_ref, .. }
+            | ComputeOp::StructSet { type_ref, .. }
+            | ComputeOp::VariantCreate { type_ref, .. }
+            | ComputeOp::VariantIs { type_ref, .. }
+            | ComputeOp::VariantGet { type_ref, .. } => Some(type_ref),
         };
         if let Some(tr) = tr {
             map.insert(c.id.as_str().to_string(), tr.clone());

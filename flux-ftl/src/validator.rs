@@ -404,6 +404,62 @@ fn collect_compute_op_refs<'a>(source: &'a str, op: &'a ComputeOp, out: &mut Vec
                 target: failure,
             });
         }
+        ComputeOp::StructGet {
+            input, type_ref, ..
+        } => {
+            out.push(Ref {
+                source_id: source,
+                target: input,
+            });
+            collect_type_ref_refs(source, type_ref, out);
+        }
+        ComputeOp::StructSet {
+            input,
+            value,
+            type_ref,
+            ..
+        } => {
+            out.push(Ref {
+                source_id: source,
+                target: input,
+            });
+            out.push(Ref {
+                source_id: source,
+                target: value,
+            });
+            collect_type_ref_refs(source, type_ref, out);
+        }
+        ComputeOp::VariantCreate {
+            variant_type,
+            payload,
+            type_ref,
+            ..
+        } => {
+            out.push(Ref {
+                source_id: source,
+                target: payload,
+            });
+            collect_type_ref_refs(source, variant_type, out);
+            collect_type_ref_refs(source, type_ref, out);
+        }
+        ComputeOp::VariantIs {
+            input, type_ref, ..
+        } => {
+            out.push(Ref {
+                source_id: source,
+                target: input,
+            });
+            collect_type_ref_refs(source, type_ref, out);
+        }
+        ComputeOp::VariantGet {
+            input, type_ref, ..
+        } => {
+            out.push(Ref {
+                source_id: source,
+                target: input,
+            });
+            collect_type_ref_refs(source, type_ref, out);
+        }
     }
 }
 
@@ -786,6 +842,18 @@ fn collect_dag_edges(program: &Program) -> HashMap<String, Vec<String>> {
                 add(s, desired.as_str());
                 add(s, success.as_str());
                 add(s, failure.as_str());
+            }
+            ComputeOp::StructGet { input, .. }
+            | ComputeOp::VariantIs { input, .. }
+            | ComputeOp::VariantGet { input, .. } => {
+                add(s, input.as_str());
+            }
+            ComputeOp::StructSet { input, value, .. } => {
+                add(s, input.as_str());
+                add(s, value.as_str());
+            }
+            ComputeOp::VariantCreate { payload, .. } => {
+                add(s, payload.as_str());
             }
         }
     }

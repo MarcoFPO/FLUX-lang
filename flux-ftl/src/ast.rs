@@ -226,6 +226,33 @@ pub enum ComputeOp {
         success: NodeRef,
         failure: NodeRef,
     },
+    StructGet {
+        input: NodeRef,
+        field: String,
+        type_ref: TypeRef,
+    },
+    StructSet {
+        input: NodeRef,
+        field: String,
+        value: NodeRef,
+        type_ref: TypeRef,
+    },
+    VariantCreate {
+        variant_type: TypeRef,
+        tag: String,
+        payload: NodeRef,
+        type_ref: TypeRef,
+    },
+    VariantIs {
+        input: NodeRef,
+        tag: String,
+        type_ref: TypeRef,
+    },
+    VariantGet {
+        input: NodeRef,
+        tag: String,
+        type_ref: TypeRef,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +447,25 @@ pub enum ArithBinOp {
 }
 
 // ---------------------------------------------------------------------------
+// F-Node — User-defined pure function definitions
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FnParam {
+    pub name: String,
+    pub type_ref: TypeRef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FnDef {
+    pub id: NodeRef,
+    pub params: Vec<FnParam>,
+    pub result: TypeRef,
+    pub body: Vec<ComputeDef>,
+    pub returns: NodeRef,
+}
+
+// ---------------------------------------------------------------------------
 // M-Node — Memory operations (region-bound)
 // ---------------------------------------------------------------------------
 
@@ -486,5 +532,7 @@ pub struct Program {
     pub contracts: Vec<ContractDef>,
     pub memories: Vec<MemoryDef>,
     pub externs: Vec<ExternDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub functions: Vec<FnDef>,
     pub entry: NodeRef,
 }

@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod codegen;
+pub mod codegen_c;
 pub mod compiler;
 pub mod error;
 pub mod evolution;

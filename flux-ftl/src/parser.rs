@@ -33,6 +33,7 @@ fn parse_program(pairs: pest::iterators::Pairs<Rule>) -> Result<Program, ParseEr
     let mut contracts = Vec::new();
     let mut memories = Vec::new();
     let mut externs = Vec::new();
+    let mut functions = Vec::new();
     let mut entry = None;
 
     for pair in pairs {
@@ -58,6 +59,7 @@ fn parse_program(pairs: pest::iterators::Pairs<Rule>) -> Result<Program, ParseEr
                             }
                             Rule::memory_def => memories.push(parse_memory_def(stmt)?),
                             Rule::extern_def => externs.push(parse_extern_def(stmt)?),
+                            Rule::fn_def => functions.push(parse_fn_def(stmt)?),
                             Rule::entry_def => {
                                 let node = stmt.into_inner().next().unwrap();
                                 entry = Some(NodeRef::new(node.as_str()));
@@ -83,6 +85,7 @@ fn parse_program(pairs: pest::iterators::Pairs<Rule>) -> Result<Program, ParseEr
         contracts,
         memories,
         externs,
+        functions,
         entry,
     })
 }
@@ -1391,5 +1394,53 @@ fn parse_extern_def(pair: pest::iterators::Pair<Rule>) -> Result<ExternDef, Pars
         params,
         result,
         effects,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// F-Node (User-defined pure functions) parser
+// ---------------------------------------------------------------------------
+
+fn parse_fn_def(pair: pest::iterators::Pair<Rule>) -> Result<FnDef, ParseError> {
+    let mut inner = pair.into_inner();
+    let id = NodeRef::new(inner.next().unwrap().as_str());
+
+    // Parse parameter list
+    let params_pair = inner.next().unwrap();
+    let mut params = Vec::new();
+    for param_pair in params_pair.into_inner() {
+        if param_pair.as_rule() == Rule::fn_param {
+            let mut param_inner = param_pair.into_inner();
+            let name = param_inner.next().unwrap().as_str().to_string();
+            let type_ref = parse_type_ref(param_inner.next().unwrap())?;
+            params.push(FnParam { name, type_ref });
+        }
+    }
+
+    // Parse result type
+    let result = parse_type_ref(inner.next().unwrap())?;
+
+    // Parse body (list of compute definitions)
+    let body_pair = inner.next().unwrap();
+    let mut body = Vec::new();
+    for compute_pair in body_pair.into_inner() {
+        if compute_pair.as_rule() == Rule::fn_body_compute {
+            let mut compute_inner = compute_pair.into_inner();
+            let compute_id = NodeRef::new(compute_inner.next().unwrap().as_str());
+            let compute_body = compute_inner.next().unwrap();
+            let op = parse_compute_body(compute_body)?;
+            body.push(ComputeDef { id: compute_id, op });
+        }
+    }
+
+    // Parse returns
+    let returns = NodeRef::new(inner.next().unwrap().as_str());
+
+    Ok(FnDef {
+        id,
+        params,
+        result,
+        body,
+        returns,
     })
 }

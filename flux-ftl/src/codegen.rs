@@ -290,6 +290,8 @@ struct CodeGenerator<'ctx, 'prog> {
     functions: HashMap<String, FunctionValue<'ctx>>,
     // Track which K-nodes have already been emitted (for cycle prevention)
     emitted_controls: HashMap<String, bool>,
+    // User-defined pure function LLVM values (F-Nodes)
+    fn_values: HashMap<String, FunctionValue<'ctx>>,
 }
 
 impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
@@ -356,6 +358,7 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
             pointers: HashMap::new(),
             functions: HashMap::new(),
             emitted_controls: HashMap::new(),
+            fn_values: HashMap::new(),
         })
     }
 
@@ -373,7 +376,10 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
         // 3. Emit global constants (ConstBytes)
         self.emit_global_constants()?;
 
-        // 4. Build `main` function
+        // 4. Emit F-Node (user-defined pure) functions
+        self.emit_fn_defs()?;
+
+        // 5. Build `main` function
         self.emit_main()?;
 
         // 5. Verify module
@@ -700,6 +706,80 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                 );
             }
         }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Emit F-Node (user-defined pure) functions
+    // ------------------------------------------------------------------
+
+    fn emit_fn_defs(&mut self) -> Result<(), CodegenError> {
+        // Phase 1: Forward-declare all F-Nodes as LLVM functions
+        for fn_def in &self.program.functions {
+            let fn_name = fn_def.id.as_str().strip_prefix("F:").unwrap_or(fn_def.id.as_str());
+
+            let param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = fn_def
+                .params
+                .iter()
+                .filter_map(|p| self.type_ref_to_llvm(&p.type_ref).map(|t| t.into()))
+                .collect();
+
+            let ret_type = self.type_ref_to_llvm(&fn_def.result);
+            let fn_type = match ret_type {
+                Some(t) => match t {
+                    inkwell::types::BasicTypeEnum::IntType(it) => it.fn_type(&param_types, false),
+                    inkwell::types::BasicTypeEnum::FloatType(ft) => ft.fn_type(&param_types, false),
+                    inkwell::types::BasicTypeEnum::StructType(st) => st.fn_type(&param_types, false),
+                    inkwell::types::BasicTypeEnum::PointerType(pt) => pt.fn_type(&param_types, false),
+                    inkwell::types::BasicTypeEnum::ArrayType(at) => at.fn_type(&param_types, false),
+                    inkwell::types::BasicTypeEnum::VectorType(vt) => vt.fn_type(&param_types, false),
+                },
+                None => self.context.void_type().fn_type(&param_types, false),
+            };
+
+            let llvm_fn = self.module.add_function(fn_name, fn_type, None);
+            self.fn_values.insert(fn_name.to_string(), llvm_fn);
+        }
+
+        // Phase 2: Emit bodies
+        for fn_def in &self.program.functions {
+            let fn_name = fn_def.id.as_str().strip_prefix("F:").unwrap_or(fn_def.id.as_str());
+            let llvm_fn = *self.fn_values.get(fn_name).unwrap();
+
+            let entry_bb = self.context.append_basic_block(llvm_fn, "entry");
+            let builder = self.context.create_builder();
+            builder.position_at_end(entry_bb);
+
+            // Map P:param_name to LLVM function parameters
+            for (i, param) in fn_def.params.iter().enumerate() {
+                let param_val = llvm_fn.get_nth_param(i as u32).unwrap();
+                let param_id = format!("P:{}", param.name);
+                self.values.insert(param_id, param_val);
+            }
+
+            // Temporarily register body computes in compute_map so resolve_value works
+            for compute in &fn_def.body {
+                self.compute_map.insert(compute.id.0.clone(), compute);
+            }
+
+            // Resolve the return value on demand (lazy/pull-based).
+            // This ensures that select branches are only evaluated when needed,
+            // which is critical for recursive functions to avoid infinite recursion.
+            let return_id = fn_def.returns.as_str().to_string();
+            let return_val = self.resolve_value(&return_id, llvm_fn, &builder)?;
+            builder.build_return(Some(&return_val))
+                .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+
+            // Clean up body-local values and compute_map entries
+            for param in &fn_def.params {
+                self.values.remove(&format!("P:{}", param.name));
+            }
+            for compute in &fn_def.body {
+                self.values.remove(compute.id.as_str());
+                self.compute_map.remove(compute.id.as_str());
+            }
+        }
+
         Ok(())
     }
 
@@ -1908,8 +1988,8 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
         if let Some(compute) = self.compute_map.get(node_id) {
             let compute_op = compute.op.clone();
             match &compute_op {
-                ComputeOp::Const { value, .. } => {
-                    let val = self.literal_to_llvm(value);
+                ComputeOp::Const { value, type_ref, .. } => {
+                    let val = self.literal_to_llvm_typed(value, type_ref);
                     self.values.insert(node_id.to_string(), val);
                     return Ok(val);
                 }
@@ -2056,9 +2136,18 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                     target, inputs, ..
                 } => {
                     let val =
-                        self.emit_generic_compute(node_id, target, inputs, function, builder)?;
+                        self.emit_call_pure(node_id, &target, &inputs, function, builder)?;
                     self.values.insert(node_id.to_string(), val);
                     return Ok(val);
+                }
+                ComputeOp::StructGet { .. }
+                | ComputeOp::StructSet { .. }
+                | ComputeOp::VariantCreate { .. }
+                | ComputeOp::VariantIs { .. }
+                | ComputeOp::VariantGet { .. } => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "struct/variant compute op not yet supported in LLVM codegen: {node_id}"
+                    )));
                 }
             }
         }
@@ -2362,11 +2451,142 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
 
                 Ok(BasicValueEnum::IntValue(result_truncated))
             }
+            "select" => {
+                // select { inputs: [cond, true_val, false_val], type: T }
+                // Emitted as branching (br/phi) instead of LLVM select to enable
+                // lazy evaluation of branches. This is critical for recursive
+                // functions where eager evaluation would cause infinite recursion.
+                if inputs.len() < 3 {
+                    return Err(CodegenError::Unsupported(
+                        "select expects 3 inputs: [condition, true_value, false_value]".to_string(),
+                    ));
+                }
+
+                // Resolve the condition eagerly (it's always needed)
+                let cond = self.resolve_value(&inputs[0].0, function, builder)?;
+                let cond_int = cond.into_int_value();
+
+                // Ensure the condition is i1 (bool)
+                let cond_bool = if cond_int.get_type().get_bit_width() != 1 {
+                    builder
+                        .build_int_compare(
+                            IntPredicate::NE,
+                            cond_int,
+                            cond_int.get_type().const_int(0, false),
+                            "select_cond_bool",
+                        )
+                        .map_err(|e| CodegenError::EmitFailed(e.to_string()))?
+                } else {
+                    cond_int
+                };
+
+                // Create basic blocks for branching
+                let then_bb = self.context.append_basic_block(function, "select_then");
+                let else_bb = self.context.append_basic_block(function, "select_else");
+                let merge_bb = self.context.append_basic_block(function, "select_merge");
+
+                builder
+                    .build_conditional_branch(cond_bool, then_bb, else_bb)
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+
+                // Then block: resolve true_val lazily
+                builder.position_at_end(then_bb);
+                let true_val = self.resolve_value(&inputs[1].0, function, builder)?;
+                // Get the actual block we ended up in (resolve_value may have created new blocks)
+                let then_end_bb = builder.get_insert_block().unwrap();
+                builder
+                    .build_unconditional_branch(merge_bb)
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+
+                // Else block: resolve false_val lazily
+                builder.position_at_end(else_bb);
+                let false_val = self.resolve_value(&inputs[2].0, function, builder)?;
+                // Get the actual block we ended up in
+                let else_end_bb = builder.get_insert_block().unwrap();
+                builder
+                    .build_unconditional_branch(merge_bb)
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+
+                // Merge block: phi node to select the result
+                builder.position_at_end(merge_bb);
+                let phi = builder
+                    .build_phi(true_val.get_type(), "select_result")
+                    .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                phi.add_incoming(&[(&true_val, then_end_bb), (&false_val, else_end_bb)]);
+
+                Ok(phi.as_basic_value())
+            }
             _ => {
-                // Unknown generic compute: return a zero constant
-                Ok(self.context.i64_type().const_int(0, false).into())
+                // Unknown generic compute — check F-Node definitions
+                if let Some(&fn_val) = self.fn_values.get(name) {
+                    let fn_val_copy = fn_val;
+                    let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = Vec::new();
+                    for input in inputs {
+                        let v = self.resolve_value(&input.0, function, builder)?;
+                        args.push(v.into());
+                    }
+                    let call = builder
+                        .build_call(fn_val_copy, &args, &format!("call_{name}"))
+                        .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+                    let result = call
+                        .try_as_basic_value()
+                        .left()
+                        .ok_or_else(|| {
+                            CodegenError::Unsupported(format!("F-Node '{name}' returned void"))
+                        })?;
+                    Ok(result)
+                } else {
+                    // Unknown generic compute: return a zero constant
+                    Ok(self.context.i64_type().const_int(0, false).into())
+                }
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // call_pure dispatch: builtins first, then F-Nodes, then error
+    // ------------------------------------------------------------------
+
+    fn emit_call_pure(
+        &mut self,
+        _node_id: &str,
+        target: &str,
+        inputs: &[NodeRef],
+        function: FunctionValue<'ctx>,
+        builder: &inkwell::builder::Builder<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        // First try builtin compute ops (gt, lt, min, max, abs, etc.)
+        match target {
+            "gt" | "lt" | "gte" | "lte" | "eq" | "neq" | "sgt" | "slt" | "sge" | "sle"
+            | "not" | "neg" | "abs" | "min" | "max" | "clamp" | "select" | "bhaskara_approx" => {
+                return self.emit_generic_compute(_node_id, target, inputs, function, builder);
+            }
+            _ => {}
+        }
+
+        // Then try F-Node functions
+        if let Some(&fn_val) = self.fn_values.get(target) {
+            let fn_val_copy = fn_val;
+            let mut args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = Vec::new();
+            for input in inputs {
+                let v = self.resolve_value(&input.0, function, builder)?;
+                args.push(v.into());
+            }
+            let call = builder
+                .build_call(fn_val_copy, &args, &format!("call_{target}"))
+                .map_err(|e| CodegenError::EmitFailed(e.to_string()))?;
+            let result = call
+                .try_as_basic_value()
+                .left()
+                .ok_or_else(|| {
+                    CodegenError::Unsupported(format!("call_pure to '{target}' returned void"))
+                })?;
+            return Ok(result);
+        }
+
+        Err(CodegenError::UnresolvedNode(format!(
+            "call_pure target not found: '{target}'"
+        )))
     }
 
     // ------------------------------------------------------------------
@@ -2523,6 +2743,34 @@ impl<'ctx, 'prog> CodeGenerator<'ctx, 'prog> {
                     .const_int(value.len() as u64, false)
                     .into()
             }
+        }
+    }
+
+    /// Convert a literal to an LLVM value, respecting the declared type.
+    fn literal_to_llvm_typed(&self, lit: &Literal, type_ref: &TypeRef) -> BasicValueEnum<'ctx> {
+        let llvm_type = self.type_ref_to_llvm(type_ref);
+        match lit {
+            Literal::Integer { value } => {
+                if let Some(inkwell::types::BasicTypeEnum::IntType(int_ty)) = llvm_type {
+                    int_ty.const_int(*value as u64, *value < 0).into()
+                } else {
+                    self.context
+                        .i64_type()
+                        .const_int(*value as u64, *value < 0)
+                        .into()
+                }
+            }
+            Literal::Bool { value } => {
+                if let Some(inkwell::types::BasicTypeEnum::IntType(int_ty)) = llvm_type {
+                    int_ty.const_int(*value as u64, false).into()
+                } else {
+                    self.context
+                        .bool_type()
+                        .const_int(*value as u64, false)
+                        .into()
+                }
+            }
+            _ => self.literal_to_llvm(lit),
         }
     }
 

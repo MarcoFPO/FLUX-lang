@@ -221,6 +221,7 @@ fn fold_constants(program: &Program) -> FoldResult {
             contracts: program.contracts.clone(),
             memories: program.memories.clone(),
             externs: program.externs.clone(),
+            functions: program.functions.clone(),
             entry: program.entry.clone(),
         },
         constants_folded: folded_count,
@@ -305,6 +306,7 @@ fn remove_identities(program: &Program) -> IdentityResult {
             contracts: program.contracts.clone(),
             memories: program.memories.clone(),
             externs: program.externs.clone(),
+            functions: program.functions.clone(),
             entry: program.entry.clone(),
         },
         identities_removed: removed,
@@ -441,6 +443,7 @@ fn eliminate_dead_nodes(program: &Program) -> Program {
             .filter(|x| reachable.contains(&x.id.0))
             .cloned()
             .collect(),
+        functions: program.functions.clone(),
         entry: program.entry.clone(),
     }
 }
@@ -600,6 +603,25 @@ fn refs_for_compute(c: &ComputeDef) -> Vec<String> {
                 success.0.clone(),
                 failure.0.clone(),
             ]
+        }
+        ComputeOp::StructGet { input, type_ref, .. }
+        | ComputeOp::VariantIs { input, type_ref, .. }
+        | ComputeOp::VariantGet { input, type_ref, .. } => {
+            let mut v = refs_from_type_ref(type_ref);
+            v.push(input.0.clone());
+            v
+        }
+        ComputeOp::StructSet { input, value, type_ref, .. } => {
+            let mut v = refs_from_type_ref(type_ref);
+            v.push(input.0.clone());
+            v.push(value.0.clone());
+            v
+        }
+        ComputeOp::VariantCreate { variant_type, payload, type_ref, .. } => {
+            let mut v = refs_from_type_ref(type_ref);
+            v.extend(refs_from_type_ref(variant_type));
+            v.push(payload.0.clone());
+            v
         }
     }
 }
@@ -792,6 +814,7 @@ mod tests {
             contracts: vec![],
             memories: vec![],
             externs: vec![],
+            functions: vec![],
             entry: NodeRef::new(entry),
         }
     }

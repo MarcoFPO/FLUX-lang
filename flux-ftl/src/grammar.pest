@@ -20,6 +20,7 @@ import_stmt = { "import" ~ string_lit }
 statement = {
     type_def
   | region_def
+  | fn_def
   | compute_def
   | effect_def
   | control_def
@@ -53,8 +54,10 @@ k_id = @{ "K:" ~ suffix_chars }
 v_id = @{ "V:" ~ suffix_chars }
 m_id = @{ "M:" ~ suffix_chars }
 x_id = @{ "X:" ~ suffix_chars }
+f_id = @{ "F:" ~ suffix_chars }
+p_id = @{ "P:" ~ suffix_chars }
 
-node_ref = @{ ("T" | "R" | "C" | "E" | "K" | "V" | "M" | "X") ~ ":" ~ suffix_chars }
+node_ref = @{ ("T" | "R" | "C" | "E" | "K" | "V" | "M" | "X" | "F" | "P") ~ ":" ~ suffix_chars }
 
 // ---------------------------------------------------------------------------
 // Builtin Types & TypeRef
@@ -453,6 +456,24 @@ formula_index_access = { (formula_field_access | node_ref | ident) ~ "[" ~ formu
 
 // function-like calls in formulas: region_valid(R:b2), shared_mnodes(b1, b2), etc.
 formula_func_call = { ident ~ "(" ~ (formula ~ ("," ~ formula)*)? ~ ")" }
+
+// ---------------------------------------------------------------------------
+// F-Node (User-defined pure functions)
+// ---------------------------------------------------------------------------
+
+fn_def = {
+    f_id ~ "=" ~ "fn" ~ "{"
+    ~ "params" ~ ":" ~ fn_param_list
+    ~ "," ~ "result" ~ ":" ~ type_ref
+    ~ "," ~ "body" ~ ":" ~ fn_body
+    ~ "," ~ "returns" ~ ":" ~ node_ref ~ "}"
+}
+
+fn_param_list = { "[" ~ (fn_param ~ ("," ~ fn_param)*)? ~ "]" }
+fn_param = { ident ~ ":" ~ type_ref }
+
+fn_body = { "[" ~ (fn_body_compute ~ ("," ~ fn_body_compute)*)? ~ "]" }
+fn_body_compute = { c_id ~ "=" ~ compute_body }
 
 // ---------------------------------------------------------------------------
 // M-Node (Memory)

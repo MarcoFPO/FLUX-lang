@@ -841,6 +841,7 @@ impl GraphPool {
                     contracts: vec![],
                     memories: vec![],
                     externs: vec![],
+                    functions: vec![],
                     entry: NodeRef::new("K:entry"),
                 },
                 0,
@@ -1081,6 +1082,13 @@ pub fn calculate_depth(program: &Program) -> usize {
                 expected.0.clone(),
                 desired.0.clone(),
             ],
+            ComputeOp::StructGet { input, .. }
+            | ComputeOp::VariantIs { input, .. }
+            | ComputeOp::VariantGet { input, .. } => vec![input.0.clone()],
+            ComputeOp::StructSet { input, value, .. } => {
+                vec![input.0.clone(), value.0.clone()]
+            }
+            ComputeOp::VariantCreate { payload, .. } => vec![payload.0.clone()],
         };
 
         let max_input_depth = input_ids
@@ -1111,6 +1119,8 @@ pub fn estimate_cost(program: &Program) -> f64 {
             ComputeOp::AtomicLoad { .. } => 5.0,
             ComputeOp::AtomicStore { .. } => 5.0,
             ComputeOp::AtomicCas { .. } => 10.0,
+            ComputeOp::StructGet { .. } | ComputeOp::StructSet { .. } => 2.0,
+            ComputeOp::VariantCreate { .. } | ComputeOp::VariantIs { .. } | ComputeOp::VariantGet { .. } => 2.0,
         })
         .sum();
 
@@ -1178,7 +1188,12 @@ fn get_compute_type_ref(compute: &ComputeDef) -> TypeRef {
         | ComputeOp::Arith { type_ref, .. }
         | ComputeOp::CallPure { type_ref, .. }
         | ComputeOp::Generic { type_ref, .. }
-        | ComputeOp::AtomicLoad { type_ref, .. } => type_ref.clone(),
+        | ComputeOp::AtomicLoad { type_ref, .. }
+        | ComputeOp::StructGet { type_ref, .. }
+        | ComputeOp::StructSet { type_ref, .. }
+        | ComputeOp::VariantCreate { type_ref, .. }
+        | ComputeOp::VariantIs { type_ref, .. }
+        | ComputeOp::VariantGet { type_ref, .. } => type_ref.clone(),
         ComputeOp::AtomicStore { .. } | ComputeOp::AtomicCas { .. } => TypeRef::Builtin {
             name: "unit".to_string(),
         },
@@ -1200,6 +1215,11 @@ fn compute_references_id(compute: &ComputeDef, id: &str) -> bool {
             desired,
             ..
         } => target.0 == id || expected.0 == id || desired.0 == id,
+        ComputeOp::StructGet { input, .. }
+        | ComputeOp::VariantIs { input, .. }
+        | ComputeOp::VariantGet { input, .. } => input.0 == id,
+        ComputeOp::StructSet { input, value, .. } => input.0 == id || value.0 == id,
+        ComputeOp::VariantCreate { payload, .. } => payload.0 == id,
     }
 }
 
@@ -1245,6 +1265,26 @@ fn replace_node_ref_in_compute(compute: &mut ComputeDef, old_id: &str, new_id: &
             }
         }
         ComputeOp::Const { .. } | ComputeOp::ConstBytes { .. } => {}
+        ComputeOp::StructGet { input, .. }
+        | ComputeOp::VariantIs { input, .. }
+        | ComputeOp::VariantGet { input, .. } => {
+            if input.0 == old_id {
+                *input = NodeRef::new(new_id);
+            }
+        }
+        ComputeOp::StructSet { input, value, .. } => {
+            if input.0 == old_id {
+                *input = NodeRef::new(new_id);
+            }
+            if value.0 == old_id {
+                *value = NodeRef::new(new_id);
+            }
+        }
+        ComputeOp::VariantCreate { payload, .. } => {
+            if payload.0 == old_id {
+                *payload = NodeRef::new(new_id);
+            }
+        }
     }
 }
 

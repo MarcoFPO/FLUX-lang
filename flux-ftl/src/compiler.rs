@@ -301,6 +301,33 @@ fn refs_for_compute(c: &ComputeDef) -> Vec<String> {
                 success.0.clone(), failure.0.clone(),
             ]
         }
+        ComputeOp::StructGet { input, type_ref, .. } => {
+            let mut v = refs_from_type_ref(type_ref);
+            v.push(input.0.clone());
+            v
+        }
+        ComputeOp::StructSet { input, value, type_ref, .. } => {
+            let mut v = refs_from_type_ref(type_ref);
+            v.push(input.0.clone());
+            v.push(value.0.clone());
+            v
+        }
+        ComputeOp::VariantCreate { variant_type, payload, type_ref, .. } => {
+            let mut v = refs_from_type_ref(type_ref);
+            v.extend(refs_from_type_ref(variant_type));
+            v.push(payload.0.clone());
+            v
+        }
+        ComputeOp::VariantIs { input, type_ref, .. } => {
+            let mut v = refs_from_type_ref(type_ref);
+            v.push(input.0.clone());
+            v
+        }
+        ComputeOp::VariantGet { input, type_ref, .. } => {
+            let mut v = refs_from_type_ref(type_ref);
+            v.push(input.0.clone());
+            v
+        }
     }
 }
 

@@ -155,6 +155,11 @@ fn extract_type_ref(op: &ComputeOp) -> Option<&TypeRef> {
         ComputeOp::AtomicLoad { type_ref, .. } => Some(type_ref),
         ComputeOp::AtomicStore { .. } => None,
         ComputeOp::AtomicCas { .. } => None,
+        ComputeOp::StructGet { type_ref, .. }
+        | ComputeOp::StructSet { type_ref, .. }
+        | ComputeOp::VariantCreate { type_ref, .. }
+        | ComputeOp::VariantIs { type_ref, .. }
+        | ComputeOp::VariantGet { type_ref, .. } => Some(type_ref),
     }
 }
 

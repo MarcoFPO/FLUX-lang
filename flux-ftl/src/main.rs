@@ -59,6 +59,10 @@ enum Commands {
         #[arg(long, default_value = "host")]
         target: String,
     },
+    /// Emit C11 source code to stdout (lightweight codegen without LLVM)
+    EmitC {
+        file: String,
+    },
     Generate {
         requirement: String,
         #[arg(long, default_value = "translate")]
@@ -455,6 +459,57 @@ fn cmd_ir(file: &str, target_str: &str) -> ExitCode {
 }
 
 // ---------------------------------------------------------------------------
+// Emit-C subcommand
+// ---------------------------------------------------------------------------
+
+fn cmd_emit_c(file: &str) -> ExitCode {
+    let input = match read_input(file) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            return ExitCode::from(2);
+        }
+    };
+
+    // Try import resolution for file-based input
+    let result = if file != "-" {
+        if let Some(merged) = parse_and_resolve(&input, file) {
+            pipeline::run_check_program(merged)
+        } else {
+            pipeline::run_check(&input)
+        }
+    } else {
+        pipeline::run_check(&input)
+    };
+
+    if result.status != FullStatus::Ok {
+        if let Err(e) = print_json(&result) {
+            eprintln!("error: {}", e);
+        }
+        return ExitCode::from(1);
+    }
+
+    let ast = match &result.ast {
+        Some(a) => a,
+        None => {
+            eprintln!("error: no AST available after check");
+            return ExitCode::from(2);
+        }
+    };
+
+    match flux_ftl::codegen_c::codegen_c(ast) {
+        Ok(c_code) => {
+            print!("{}", c_code);
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: codegen_c: {}", e);
+            ExitCode::from(2)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Generate subcommand
 // ---------------------------------------------------------------------------
 
@@ -674,6 +729,7 @@ fn main() -> ExitCode {
             lto,
         }) => cmd_build(file, output.as_deref(), opt_level, target, bmc, bmc_depth, debug_info, lto),
         Some(Commands::Ir { ref file, ref target }) => cmd_ir(file, target),
+        Some(Commands::EmitC { ref file }) => cmd_emit_c(file),
         Some(Commands::Generate {
             ref requirement,
             ref requirement_type,
